@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from pymoo.core.problem import Problem
 from pymoo.problems import get_problem
 from pymoo.problems.multi.omnitest import OmniTest
@@ -57,6 +58,46 @@ class Benchmark_Problem(Problem):
 
           out["F"] = np.hstack([y1_mean, y2_mean])
           out["std"] = np.hstack([y1_std, y2_std])
+
+          if self.problem.has_constraints():
+            out["G"] = self.problem.evaluate(X, return_values_of=["G"])
+
+        elif self.use_surrogate == 'BNN_uncertainty':
+          y1_mean, y1_std = self.model_f1.predict(X)
+          y2_mean, y2_std = self.model_f2.predict(X)
+
+          y1_mean = y1_mean.reshape(-1, 1)
+          y2_mean = y2_mean.reshape(-1, 1)
+          y1_std = y1_std.reshape(-1, 1)
+          y2_std = y2_std.reshape(-1, 1)
+
+          out["F"] = np.hstack([y1_mean, y2_mean])
+          out["std"] = np.hstack([y1_std, y2_std])
+
+          if self.problem.has_constraints():
+            out["G"] = self.problem.evaluate(X, return_values_of=["G"])
+
+        elif self.use_surrogate == 'QR_uncertainty':
+          df_test = pd.DataFrame(X, columns=[f'x{i}' for i in range(X.shape[1])])
+
+          pred_y1 = self.model_f1.predict(df_test)
+          pred_y1.columns = [f'y_q{q}' for q in pred_y1.columns]
+          y1_q50 = pred_y1['y_q0.5'].values.reshape(-1, 1)
+          y1_q80 = pred_y1['y_q0.8'].values.reshape(-1, 1)
+          y1_q90 = pred_y1['y_q0.9'].values.reshape(-1, 1)
+          y1_q95 = pred_y1['y_q0.95'].values.reshape(-1, 1)
+
+          pred_y2 = self.model_f2.predict(df_test)
+          pred_y2.columns = [f'y_q{q}' for q in pred_y2.columns]
+          y2_q50 = pred_y2['y_q0.5'].values.reshape(-1, 1)
+          y2_q80 = pred_y2['y_q0.8'].values.reshape(-1, 1)
+          y2_q90 = pred_y2['y_q0.9'].values.reshape(-1, 1)
+          y2_q95 = pred_y2['y_q0.95'].values.reshape(-1, 1)
+
+          out["F"] = np.hstack([y1_q50, y2_q50])
+          out["F_q80"] = np.hstack([y1_q80, y2_q80])
+          out["F_q90"] = np.hstack([y1_q90, y2_q90])
+          out["F_q95"] = np.hstack([y1_q95, y2_q95])
 
           if self.problem.has_constraints():
             out["G"] = self.problem.evaluate(X, return_values_of=["G"])

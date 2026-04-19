@@ -1,42 +1,64 @@
 # 2026-offline-data-driven-MOO
 
-This repository contains a multi-objective optimization workflow based on **GPR** surrogate models and **NSGA-II**, with experiment notebooks:
+This repository contains an offline, data-driven **multi-objective optimization (MOO)** workflow built on **NSGA-II** with multiple surrogate model options:
 
-- `Exp_1_GPR(RBF).ipynb`
-- `Exp-1 GPR(Matern).ipynb`
+- **GPR (RBF)**
+- **GPR (Matern)**
+- **AutoGluon Quantile Regression (QR)**
+- **BNN Ensemble** (ensemble neural regressors for predictive uncertainty)
 
-## Current runnability status
+---
 
-After reviewing `src/` and the notebook:
+## Notebooks
 
-- The source modules in `src/` form a complete pipeline (problem setup, sampling, surrogate training, uncertainty estimation, optimization, and metrics).
-- The notebook is now configured for **non-Colab/local usage** by default (no `google.colab` dependency, no Drive mount requirement).
-- You can run it locally in Jupyter as long as dependencies are installed.
+Current experiment and test notebooks in this repository:
 
-## Project structure
+- `Exp1 GPR (RBF).ipynb`
+- `Exp2 GPR (Matern).ipynb`
+- `Exp3 Autogluon_QR.ipynb`
+- `Exp4 BNN.ipynb`
+- `[Test] Autogluon_QR.ipynb`
+- `[Test] BNN.ipynb`
+
+All notebooks follow a similar flow:
+1. Install/check dependencies.
+2. Import reusable functionality from `src/`.
+3. Generate data and train surrogates.
+4. Evaluate uncertainty diagnostics (coverage / z-score / alpha search).
+5. Run NSGA-II optimization (`run_experiment`) with standard and dual-ranking survival.
+
+---
+
+## Project Structure
 
 ```text
 .
-├── Exp_1_GPR(RBF).ipynb
-├── Exp-1 GPR(Matern).ipynb
+├── Exp1 GPR (RBF).ipynb
+├── Exp2 GPR (Matern).ipynb
+├── Exp3 Autogluon_QR.ipynb
+├── Exp4 BNN.ipynb
+├── [Test] Autogluon_QR.ipynb
+├── [Test] BNN.ipynb
 ├── README.md
 └── src
-    ├── data.py            # train/validation/test data generation
-    ├── experiment.py      # optimization experiment runner
-    ├── metrics.py         # HV / IGD+ metric setup
-    ├── models.py          # GPR(RBF) model and prediction helpers
-    ├── opt_problem.py     # surrogate problem wrapper and callback
-    ├── other_functions.py # utility functions
-    ├── plotting.py        # plotting helpers
-    ├── survival.py        # standard and dual-ranking survival
-    └── uncertainty.py     # coverage and alpha search
+    ├── data.py            # Train/validation/test data generation
+    ├── experiment.py      # NSGA-II experiment loop and metric collection
+    ├── metrics.py         # HV / IGD+ setup
+    ├── models.py          # GPR / AutoGluon-QR / BNN model wrappers and helpers
+    ├── opt_problem.py     # pymoo Problem wrapper (GPR/QR/BNN surrogate support)
+    ├── other_functions.py # Utility helpers
+    ├── plotting.py        # Plotting helpers (Pareto, z-score, etc.)
+    ├── survival.py        # Standard and dual-ranking survival operators
+    └── uncertainty.py     # Coverage and alpha search helpers
 ```
+
+---
 
 ## Requirements
 
-Recommended Python: **3.10+**
+Recommended Python version: **3.10+**
 
-Dependencies used by this project:
+Main dependencies:
 
 - numpy
 - pandas
@@ -45,24 +67,27 @@ Dependencies used by this project:
 - scikit-learn
 - pymoo
 - GPy
+- autogluon.tabular
 - ipython
 - jupyter
 
 Install example:
 
 ```bash
-python -m pip install numpy pandas matplotlib plotly scikit-learn pymoo GPy ipython jupyter
+python -m pip install numpy pandas matplotlib plotly scikit-learn pymoo GPy autogluon.tabular ipython jupyter
 ```
 
-## How to run
+> Note: The first cell in each notebook also checks/installs core packages automatically.
 
-### Option A: Jupyter Notebook (local)
+---
 
-1. Open `Exp_1_GPR(RBF).ipynb` or `Exp-1 GPR(Matern).ipynb` in Jupyter.
-2. Ensure your working directory is the repository root.
-3. Run all cells from top to bottom.
+## Quick Start
 
-The notebook now appends the repository root dynamically:
+### 1) Run notebooks
+
+From the repository root, launch Jupyter and run any notebook (for example `Exp1 GPR (RBF).ipynb`) top-to-bottom.
+
+Notebooks dynamically add the repo root to `sys.path`:
 
 ```python
 from pathlib import Path
@@ -72,37 +97,59 @@ if str(repo_root) not in sys.path:
     sys.path.append(str(repo_root))
 ```
 
-### Option B: Reuse `src/` modules in scripts
+### 2) Reuse `src/` in scripts
 
-You can import modules directly, for example:
+Example imports:
 
 ```python
 from src.opt_problem import build_problem
 from src.data import generate_data
-from src.models import GPR_RBF
+from src.experiment import run_experiment
+from src.survival import Survival_standard, Survival_dual_ranking
 ```
 
-## Quick checks
+---
 
-Run a syntax check for source files:
+## Surrogate and Optimization Interfaces
+
+In `src/opt_problem.py`, `Benchmark_Problem` supports:
+
+- `"GPR_uncertainty"`: outputs `F` and `std`
+- `"QR_uncertainty"`: outputs `F` and `F_q80/F_q90/F_q95`
+- `"BNN_uncertainty"`: outputs `F` and `std`
+
+In `src/survival.py`, `Survival_dual_ranking` supports:
+
+- **GPR/BNN mode**: hybrid ranking using `F + alpha * std`
+- **QR mode**: hybrid ranking using selected quantile matrix via `alpha=0.8/0.9/0.95` (`F_q80/F_q90/F_q95`)
+
+---
+
+## Useful Check
+
+Run a quick syntax check:
 
 ```bash
-python -m compileall src
+python -m py_compile src/models.py src/opt_problem.py src/survival.py src/uncertainty.py
 ```
 
-## Default notebook parameters
+---
 
-In `Exp_1_GPR(RBF).ipynb` and `Exp-1 GPR(Matern).ipynb` (current defaults):
+## Default Notebook Parameters
 
-- `problem_name = 'dtlz1'`
+Most notebooks currently default to:
+
+- `problem_name = "dtlz1"`
 - `n_var = 10`
 - `n_obj = 2`
 - `n_gen = 100`
 - `pop_size = 100`
 
-For a faster smoke run, reduce the optimization scale first (for example, `n_gen=10`, `pop_size=30`).
+For a quick smoke test, reduce problem size first (for example `n_gen=10`, `pop_size=30`).
+
+---
 
 ## Notes
 
-- Keep `problem_name` lowercase to match branch logic in `src/metrics.py`.
-- `GPy` installation may vary by platform; if installation fails locally, try a clean virtual environment.
+- Keep `problem_name` lowercase (e.g., `dtlz1`) for consistent branch handling.
+- `GPy` and `autogluon.tabular` can take longer to install depending on platform; a clean virtual environment is recommended.
