@@ -59,6 +59,27 @@ class GPR_RBF:
         y_std = np.sqrt(y_var)
         return y_mean.flatten(), y_std.flatten()
 
+
+class GPR_Matern:
+    def __init__(self):
+        self.model = None
+
+    def fit(self, X, y):
+        y = y.reshape(-1, 1)
+        kernel = GPy.kern.Matern52(input_dim=X.shape[1], ARD=True)
+        self.model = GPy.models.GPRegression(X, y, kernel, normalizer=True)
+        self.model.optimize(messages=False)
+
+    def predict(self, X):
+        y_mean, y_var = self.model.predict(X, include_likelihood=True)
+        y_std = np.sqrt(y_var)
+        return y_mean.flatten(), y_std.flatten()
+
+    def predict_noiseless(self, X):
+        y_mean, y_var = self.model.predict(X, include_likelihood=False)
+        y_std = np.sqrt(y_var)
+        return y_mean.flatten(), y_std.flatten()
+
 def gpr_pred_mean_std(model_f1, model_f2, X_test, noiseless=False, verbose=True):
     if noiseless:
         mean_f1, std_f1 = model_f1.predict_noiseless(X_test)
