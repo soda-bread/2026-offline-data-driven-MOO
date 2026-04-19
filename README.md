@@ -71,7 +71,6 @@ Main dependencies:
 - ipython
 - jupyter
 
-可使用如下命令安装：
 
 ```bash
 python -m pip install numpy pandas matplotlib plotly scikit-learn pymoo GPy autogluon.tabular ipython jupyter
@@ -145,11 +144,7 @@ Most notebooks currently default to:
 - `n_gen = 100`
 - `pop_size = 100`
 
-For a quick smoke test, reduce problem size first (for example `n_gen=10`, `pop_size=30`).
-
----
-
-## 备注
+## Notes
 
 - Keep `problem_name` lowercase (e.g., `dtlz1`) for consistent branch handling.
 - `GPy` and `autogluon.tabular` can take longer to install depending on platform; a clean virtual environment is recommended.
