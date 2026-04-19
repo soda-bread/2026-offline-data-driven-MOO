@@ -46,7 +46,8 @@ class Benchmark_Problem(Problem):
         self.use_surrogate = use_surrogate
 
     def _evaluate(self, X, out, *args, **kwargs):
-        if self.use_surrogate == 'GPR_uncertainty':
+        surrogate_modes = {'GPR_uncertainty', 'BNN_uncertainty', 'autogluon_uncertainty'}
+        if self.use_surrogate in surrogate_modes:
           y1_mean, y1_std = self.model_f1.predict(X)
           y2_mean, y2_std = self.model_f2.predict(X)
 

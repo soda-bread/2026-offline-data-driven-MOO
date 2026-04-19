@@ -1,5 +1,7 @@
 import numpy as np
 import GPy
+from sklearn.neural_network import MLPRegressor
+from sklearn.ensemble import RandomForestRegressor
 
 # Model: GPR_RBF
 class GPR_RBF:
@@ -59,7 +61,84 @@ class GPR_RBF:
         y_std = np.sqrt(y_var)
         return y_mean.flatten(), y_std.flatten()
 
-def gpr_pred_mean_std(model_f1, model_f2, X_test, noiseless=False, verbose=True):
+
+class GPR_Matern:
+    def __init__(self):
+        self.model = None
+
+    def fit(self, X, y):
+        y = y.reshape(-1, 1)
+        kernel = GPy.kern.Matern52(input_dim=X.shape[1], ARD=True)
+        self.model = GPy.models.GPRegression(X, y, kernel, normalizer=True)
+        self.model.optimize(messages=False)
+
+    def predict(self, X):
+        y_mean, y_var = self.model.predict(X, include_likelihood=True)
+        y_std = np.sqrt(y_var)
+        return y_mean.flatten(), y_std.flatten()
+
+    def predict_noiseless(self, X):
+        y_mean, y_var = self.model.predict(X, include_likelihood=False)
+        y_std = np.sqrt(y_var)
+        return y_mean.flatten(), y_std.flatten()
+
+
+class BNN_Ensemble:
+    """Approximate BNN with an MLP ensemble to expose predictive uncertainty."""
+
+    def __init__(self, n_estimators=5, hidden_layer_sizes=(128, 64), max_iter=600, random_state=42):
+        self.n_estimators = n_estimators
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.max_iter = max_iter
+        self.random_state = random_state
+        self.models = []
+
+    def fit(self, X, y):
+        self.models = []
+        y = np.asarray(y).reshape(-1)
+        for idx in range(self.n_estimators):
+            model = MLPRegressor(
+                hidden_layer_sizes=self.hidden_layer_sizes,
+                activation="relu",
+                solver="adam",
+                max_iter=self.max_iter,
+                random_state=self.random_state + idx,
+            )
+            model.fit(X, y)
+            self.models.append(model)
+
+    def predict(self, X):
+        preds = np.column_stack([model.predict(X) for model in self.models])
+        return preds.mean(axis=1), preds.std(axis=1)
+
+    def predict_noiseless(self, X):
+        return self.predict(X)
+
+
+class AutoGluon_RF:
+    """AutoGluon-style surrogate wrapper with mean/std outputs."""
+
+    def __init__(self, n_estimators=400, random_state=42, min_samples_leaf=1):
+        self.model = RandomForestRegressor(
+            n_estimators=n_estimators,
+            random_state=random_state,
+            min_samples_leaf=min_samples_leaf,
+            n_jobs=-1,
+        )
+
+    def fit(self, X, y):
+        y = np.asarray(y).reshape(-1)
+        self.model.fit(X, y)
+
+    def predict(self, X):
+        tree_preds = np.column_stack([est.predict(X) for est in self.model.estimators_])
+        return tree_preds.mean(axis=1), tree_preds.std(axis=1)
+
+    def predict_noiseless(self, X):
+        return self.predict(X)
+
+
+def surrogate_pred_mean_std(model_f1, model_f2, X_test, noiseless=False, verbose=True):
     if noiseless:
         mean_f1, std_f1 = model_f1.predict_noiseless(X_test)
         mean_f2, std_f2 = model_f2.predict_noiseless(X_test)
@@ -82,3 +161,7 @@ def gpr_pred_mean_std(model_f1, model_f2, X_test, noiseless=False, verbose=True)
         print(f"[{tag}] Max pred_std\n", np.max(pred_std, axis=0))
 
     return pred_mean, pred_std, mean_f1, std_f1, mean_f2, std_f2
+
+
+# Backward-compatible alias for existing notebooks.
+gpr_pred_mean_std = surrogate_pred_mean_std
