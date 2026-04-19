@@ -1,6 +1,9 @@
 # 2026-offline-data-driven-MOO
 
-This repository contains a multi-objective optimization workflow based on **GPR (RBF kernel)** surrogate models and **NSGA-II**, with an experiment notebook: `Exp_1_GPR(RBF).ipynb`.
+This repository contains a multi-objective optimization workflow based on **GPR** surrogate models and **NSGA-II**, with experiment notebooks:
+
+- `Exp_1_GPR(RBF).ipynb`
+- `Exp-1 GPR(Matern).ipynb`
 
 ## Current runnability status
 
@@ -15,6 +18,7 @@ After reviewing `src/` and the notebook:
 ```text
 .
 ├── Exp_1_GPR(RBF).ipynb
+├── Exp-1 GPR(Matern).ipynb
 ├── README.md
 └── src
     ├── data.py            # train/validation/test data generation
@@ -54,7 +58,7 @@ python -m pip install numpy pandas matplotlib plotly scikit-learn pymoo GPy ipyt
 
 ### Option A: Jupyter Notebook (local)
 
-1. Open `Exp_1_GPR(RBF).ipynb` in Jupyter.
+1. Open `Exp_1_GPR(RBF).ipynb` or `Exp-1 GPR(Matern).ipynb` in Jupyter.
 2. Ensure your working directory is the repository root.
 3. Run all cells from top to bottom.
 
@@ -88,7 +92,7 @@ python -m compileall src
 
 ## Default notebook parameters
 
-In `Exp_1_GPR(RBF).ipynb` (current defaults):
+In `Exp_1_GPR(RBF).ipynb` and `Exp-1 GPR(Matern).ipynb` (current defaults):
 
 - `problem_name = 'dtlz1'`
 - `n_var = 10`
