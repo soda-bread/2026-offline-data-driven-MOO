@@ -1,17 +1,17 @@
 # 2026-offline-data-driven-MOO
 
-该仓库用于 **离线数据驱动的多目标优化（MOO）** 实验，核心优化器为 **NSGA-II**，并支持多种代理模型：
+This repository contains an offline, data-driven **multi-objective optimization (MOO)** workflow built on **NSGA-II** with multiple surrogate model options:
 
 - **GPR (RBF)**
 - **GPR (Matern)**
 - **AutoGluon Quantile Regression (QR)**
-- **BNN Ensemble（用集成神经网络近似不确定性）**
+- **BNN Ensemble** (ensemble neural regressors for predictive uncertainty)
 
 ---
 
-## Notebook 列表
+## Notebooks
 
-实验与测试 Notebook（当前仓库内）：
+Current experiment and test notebooks in this repository:
 
 - `Exp1 GPR (RBF).ipynb`
 - `Exp2 GPR (Matern).ipynb`
@@ -20,15 +20,16 @@
 - `[Test] Autogluon_QR.ipynb`
 - `[Test] BNN.ipynb`
 
-这些 notebook 都采用一致流程：
-1. 安装/检查依赖；
-2. 从 `src/` 导入功能模块；
-3. 数据生成、代理模型训练、覆盖率/不确定性分析；
-4. 使用 `run_experiment` 执行 NSGA-II 优化（标准 survival + dual-ranking）。
+All notebooks follow a similar flow:
+1. Install/check dependencies.
+2. Import reusable functionality from `src/`.
+3. Generate data and train surrogates.
+4. Evaluate uncertainty diagnostics (coverage / z-score / alpha search).
+5. Run NSGA-II optimization (`run_experiment`) with standard and dual-ranking survival.
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```text
 .
@@ -40,24 +41,24 @@
 ├── [Test] BNN.ipynb
 ├── README.md
 └── src
-    ├── data.py            # 训练/验证/测试数据生成
-    ├── experiment.py      # NSGA-II 实验主循环（指标统计）
-    ├── metrics.py         # HV / IGD+ 配置
-    ├── models.py          # GPR / AutoGluon-QR / BNN 模型封装与预测接口
-    ├── opt_problem.py     # pymoo Problem 封装（支持 GPR/QR/BNN surrogate）
-    ├── other_functions.py # 统计等辅助函数
-    ├── plotting.py        # 绘图函数（Pareto、z-score 等）
-    ├── survival.py        # 标准与 dual-ranking survival
-    └── uncertainty.py     # coverage 与 alpha 搜索
+    ├── data.py            # Train/validation/test data generation
+    ├── experiment.py      # NSGA-II experiment loop and metric collection
+    ├── metrics.py         # HV / IGD+ setup
+    ├── models.py          # GPR / AutoGluon-QR / BNN model wrappers and helpers
+    ├── opt_problem.py     # pymoo Problem wrapper (GPR/QR/BNN surrogate support)
+    ├── other_functions.py # Utility helpers
+    ├── plotting.py        # Plotting helpers (Pareto, z-score, etc.)
+    ├── survival.py        # Standard and dual-ranking survival operators
+    └── uncertainty.py     # Coverage and alpha search helpers
 ```
 
 ---
 
-## 环境与依赖
+## Requirements
 
-推荐 Python 版本：**3.10+**
+Recommended Python version: **3.10+**
 
-主要依赖：
+Main dependencies:
 
 - numpy
 - pandas
@@ -76,17 +77,17 @@
 python -m pip install numpy pandas matplotlib plotly scikit-learn pymoo GPy autogluon.tabular ipython jupyter
 ```
 
-> 提示：Notebook 的第一个代码块也会自动检查并安装核心依赖。
+> Note: The first cell in each notebook also checks/installs core packages automatically.
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1) 运行 Notebook
+### 1) Run notebooks
 
-在仓库根目录启动 Jupyter，然后打开任意实验 notebook（例如 `Exp1 GPR (RBF).ipynb`）顺序运行即可。
+From the repository root, launch Jupyter and run any notebook (for example `Exp1 GPR (RBF).ipynb`) top-to-bottom.
 
-Notebook 会自动将仓库根路径加入 `sys.path`：
+Notebooks dynamically add the repo root to `sys.path`:
 
 ```python
 from pathlib import Path
@@ -96,9 +97,9 @@ if str(repo_root) not in sys.path:
     sys.path.append(str(repo_root))
 ```
 
-### 2) 复用 `src/` 模块
+### 2) Reuse `src/` in scripts
 
-你可以在脚本中直接复用统一接口，例如：
+Example imports:
 
 ```python
 from src.opt_problem import build_problem
@@ -109,24 +110,24 @@ from src.survival import Survival_standard, Survival_dual_ranking
 
 ---
 
-## 代理模型与优化接口说明
+## Surrogate and Optimization Interfaces
 
-`src/opt_problem.py` 中 `Benchmark_Problem` 支持以下 `use_surrogate`：
+In `src/opt_problem.py`, `Benchmark_Problem` supports:
 
-- `"GPR_uncertainty"`：输出 `F` 与 `std`
-- `"QR_uncertainty"`：输出 `F` 与 `F_q80/F_q90/F_q95`
-- `"BNN_uncertainty"`：输出 `F` 与 `std`
+- `"GPR_uncertainty"`: outputs `F` and `std`
+- `"QR_uncertainty"`: outputs `F` and `F_q80/F_q90/F_q95`
+- `"BNN_uncertainty"`: outputs `F` and `std`
 
-`src/survival.py` 中 `Survival_dual_ranking` 支持两种模式：
+In `src/survival.py`, `Survival_dual_ranking` supports:
 
-- **GPR/BNN**：基于 `F + alpha * std` 进行 hybrid 排序；
-- **QR**：通过 `alpha=0.8/0.9/0.95` 选择对应分位数（`F_q80/F_q90/F_q95`）进行 hybrid 排序。
+- **GPR/BNN mode**: hybrid ranking using `F + alpha * std`
+- **QR mode**: hybrid ranking using selected quantile matrix via `alpha=0.8/0.9/0.95` (`F_q80/F_q90/F_q95`)
 
 ---
 
-## 常用检查
+## Useful Check
 
-可以先做语法检查：
+Run a quick syntax check:
 
 ```bash
 python -m py_compile src/models.py src/opt_problem.py src/survival.py src/uncertainty.py
@@ -134,9 +135,9 @@ python -m py_compile src/models.py src/opt_problem.py src/survival.py src/uncert
 
 ---
 
-## 默认实验参数（Notebook）
+## Default Notebook Parameters
 
-多数 notebook 默认参数：
+Most notebooks currently default to:
 
 - `problem_name = "dtlz1"`
 - `n_var = 10`
@@ -144,11 +145,11 @@ python -m py_compile src/models.py src/opt_problem.py src/survival.py src/uncert
 - `n_gen = 100`
 - `pop_size = 100`
 
-若只想快速冒烟测试，建议先降低规模（如 `n_gen=10`, `pop_size=30`）。
+For a quick smoke test, reduce problem size first (for example `n_gen=10`, `pop_size=30`).
 
 ---
 
 ## 备注
 
-- 为保证分支判断一致，建议 `problem_name` 使用小写（如 `dtlz1`）。
-- `GPy` / `autogluon.tabular` 在不同平台安装时间可能较长，建议使用干净虚拟环境。
+- Keep `problem_name` lowercase (e.g., `dtlz1`) for consistent branch handling.
+- `GPy` and `autogluon.tabular` can take longer to install depending on platform; a clean virtual environment is recommended.
