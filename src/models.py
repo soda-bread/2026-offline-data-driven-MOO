@@ -2,6 +2,7 @@ import numpy as np
 import GPy
 import pandas as pd
 from autogluon.tabular import TabularPredictor
+from sklearn.neural_network import MLPRegressor
 
 # Model: GPR_RBF
 class GPR_RBF:
@@ -151,3 +152,53 @@ def autogluon_qr_pred_mean_quantiles(model_f1, model_f2, X_test, verbose=True):
         print("[QR] y_q95\n", q95[:5])
 
     return mean_q, q80, q90, q95
+
+
+class BNNEnsembleRegressor:
+    def __init__(self, hidden_layer_sizes=(64, 64), n_estimators=5, max_iter=2000, random_state=42):
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.n_estimators = n_estimators
+        self.max_iter = max_iter
+        self.random_state = random_state
+        self.models = []
+
+    def fit(self, X, y):
+        self.models = []
+        for i in range(self.n_estimators):
+            model = MLPRegressor(
+                hidden_layer_sizes=self.hidden_layer_sizes,
+                activation="relu",
+                solver="adam",
+                max_iter=self.max_iter,
+                random_state=self.random_state + i
+            )
+            model.fit(X, y)
+            self.models.append(model)
+
+    def predict(self, X):
+        if len(self.models) == 0:
+            raise ValueError("Model is not fitted yet.")
+        preds = np.stack([m.predict(X) for m in self.models], axis=1)
+        mean = preds.mean(axis=1)
+        std = preds.std(axis=1)
+        return mean, std
+
+
+def bnn_pred_mean_std(model_f1, model_f2, X_test, verbose=True):
+    mean_f1, std_f1 = model_f1.predict(X_test)
+    mean_f2, std_f2 = model_f2.predict(X_test)
+
+    mean_f1 = np.asarray(mean_f1).reshape(-1)
+    std_f1 = np.asarray(std_f1).reshape(-1)
+    mean_f2 = np.asarray(mean_f2).reshape(-1)
+    std_f2 = np.asarray(std_f2).reshape(-1)
+
+    pred_mean = np.stack([mean_f1, mean_f2], axis=1)
+    pred_std = np.stack([std_f1, std_f2], axis=1)
+
+    if verbose:
+        print("[BNN] pred_mean\n", pred_mean[:5])
+        print("[BNN] pred_std\n", pred_std[:5])
+        print("[BNN] Max pred_std\n", np.max(pred_std, axis=0))
+
+    return pred_mean, pred_std, mean_f1, std_f1, mean_f2, std_f2

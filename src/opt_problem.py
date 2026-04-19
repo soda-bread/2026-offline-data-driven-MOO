@@ -62,6 +62,21 @@ class Benchmark_Problem(Problem):
           if self.problem.has_constraints():
             out["G"] = self.problem.evaluate(X, return_values_of=["G"])
 
+        elif self.use_surrogate == 'BNN_uncertainty':
+          y1_mean, y1_std = self.model_f1.predict(X)
+          y2_mean, y2_std = self.model_f2.predict(X)
+
+          y1_mean = y1_mean.reshape(-1, 1)
+          y2_mean = y2_mean.reshape(-1, 1)
+          y1_std = y1_std.reshape(-1, 1)
+          y2_std = y2_std.reshape(-1, 1)
+
+          out["F"] = np.hstack([y1_mean, y2_mean])
+          out["std"] = np.hstack([y1_std, y2_std])
+
+          if self.problem.has_constraints():
+            out["G"] = self.problem.evaluate(X, return_values_of=["G"])
+
         elif self.use_surrogate == 'QR_uncertainty':
           df_test = pd.DataFrame(X, columns=[f'x{i}' for i in range(X.shape[1])])
 
