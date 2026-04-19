@@ -1,0 +1,215 @@
+import numpy as np
+from pymoo.core.problem import Problem
+from pymoo.problems import get_problem
+from pymoo.problems.multi.omnitest import OmniTest
+from pymoo.core.callback import Callback
+from IPython.display import clear_output
+import matplotlib.pyplot as plt
+
+def build_problem(problem_name, n_var=None, n_obj=None):
+    pname = problem_name.lower()
+
+    if "dtlz" in pname:
+        if n_var is None or n_obj is None:
+            raise ValueError("DTLZ problems require both n_var and n_obj.")
+        problem = get_problem(problem_name, n_var=n_var, n_obj=n_obj)
+
+    elif "omnitest" in pname:
+        if n_var is None:
+            raise ValueError("OmniTest requires n_var.")
+        problem = OmniTest(n_var=n_var)
+
+    else:
+        problem = get_problem(problem_name)
+
+    return problem
+
+# Problem
+class Benchmark_Problem(Problem):
+    def __init__(self, model_f1, model_f2, n_var, n_obj, xl, xu, problem_name, use_surrogate):
+
+        if 'dtlz' in problem_name:
+          self.problem = get_problem(problem_name, n_var=n_var, n_obj=n_obj)
+        elif 'omnitest' in problem_name:
+          
+          self.problem = OmniTest(n_var=n_var)
+        else:
+          self.problem = get_problem(problem_name)
+
+        n_constr = self.problem.n_constr if self.problem.has_constraints() else 0
+
+        super().__init__(n_var=n_var, n_obj=n_obj, xl=xl, xu=xu,
+                         n_constr=n_constr)
+
+        self.model_f1 = model_f1
+        self.model_f2 = model_f2
+        self.use_surrogate = use_surrogate
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        if self.use_surrogate == 'GPR_uncertainty':
+          y1_mean, y1_std = self.model_f1.predict(X)
+          y2_mean, y2_std = self.model_f2.predict(X)
+
+          y1_mean = y1_mean.reshape(-1, 1)
+          y2_mean = y2_mean.reshape(-1, 1)
+          y1_std = y1_std.reshape(-1, 1)
+          y2_std = y2_std.reshape(-1, 1)
+
+          out["F"] = np.hstack([y1_mean, y2_mean])
+          out["std"] = np.hstack([y1_std, y2_std])
+
+          if self.problem.has_constraints():
+            out["G"] = self.problem.evaluate(X, return_values_of=["G"])
+
+        else:
+          out["F"] = self.problem.evaluate(X, return_values_of=["F"])
+
+
+    
+class EvaluatePreRealCallback(Callback):
+    def __init__(self, true_problem, plot_every=1, use_opt=True, dynamic_show=False,
+                 prefix="", obj_min=None, obj_max=None, hv_indicator=None):
+        super().__init__()
+        self.true_problem = true_problem
+        self.plot_every = plot_every
+        self.use_opt = use_opt
+        self.dynamic_show = dynamic_show
+        self.prefix = prefix
+        self.max_f_so_far = None
+        self.obj_min = None if obj_min is None else np.asarray(obj_min, dtype=float)
+        self.obj_max = None if obj_max is None else np.asarray(obj_max, dtype=float)
+        self.hv_indicator = hv_indicator
+        self.records = []
+
+    def notify(self, algorithm):
+        gen = algorithm.n_gen
+
+        if gen % self.plot_every != 0:
+            return
+
+        pop = algorithm.opt if self.use_opt else algorithm.pop
+        X = pop.get("X")
+        pre = pop.get("F")
+        real = self.true_problem.evaluate(X, return_values_of=["F"])
+
+        hv_sur = None
+        hv_real = None
+        if self.hv_indicator is not None and self.obj_min is not None and self.obj_max is not None:
+            pre_norm = (pre - self.obj_min) / (self.obj_max - self.obj_min)
+            real_norm = (real - self.obj_min) / (self.obj_max - self.obj_min)
+            hv_sur = float(self.hv_indicator.do(pre_norm))
+            hv_real = float(self.hv_indicator.do(real_norm))
+
+        if self.dynamic_show:
+            clear_output(wait=True)
+
+        max_pre = np.max(pre, axis=0)
+        max_real = np.max(real, axis=0)
+        max_f = np.maximum(max_pre, max_real)
+
+        if self.max_f_so_far is None:
+            self.max_f_so_far = max_f.copy()
+        else:
+            self.max_f_so_far = np.maximum(self.max_f_so_far, max_f)
+
+        print(f"[{self.prefix}] Generation {gen}")
+        print(f"Max f1: {self.max_f_so_far[0]:.2f}| {self.obj_max[0] * 1.1 :.2f}")
+        print(f"Max f2: {self.max_f_so_far[1]:.2f}| {self.obj_max[1] * 1.1 :.2f}")
+
+        if hv_sur is not None and hv_real is not None:
+            print(f"HV sur : {hv_sur:.4f}")
+            print(f"HV real: {hv_real:.4f}")
+
+        result = evaluate_pre_real(
+            pre,
+            real,
+            title=f"{self.prefix} | Gen {gen}",
+            show_plot=True
+        )
+
+        self.records.append({
+            "gen": gen,
+            "X": X.copy(),
+            "pre": pre.copy(),
+            "real": real.copy(),
+            "hv_sur": hv_sur,
+            "hv_real": hv_real,
+            **result
+        })
+
+def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show_plot=True):
+    pre = np.asarray(pre, dtype=float)
+    real = np.asarray(real, dtype=float)
+
+    if pre.ndim != 2 or real.ndim != 2:
+        raise ValueError("pre and real must be 2D arrays.")
+    if pre.shape[1] != 2 or real.shape[1] != 2:
+        raise ValueError("pre and real must have shape (n, 2).")
+    if pre.shape[0] != real.shape[0]:
+        raise ValueError("pre and real must have the same number of rows.")
+
+    # row-wise Euclidean distance
+    distances = np.sqrt(np.sum((pre - real) ** 2, axis=1))
+
+    max_idx = np.argmax(distances)
+    min_idx = np.argmin(distances)
+
+    result = {
+        "distances": distances,
+        "max_distance": distances[max_idx],
+        "max_obj_point": pre[max_idx],
+        "max_f_real_point": real[max_idx],
+        "min_distance": distances[min_idx],
+        "min_obj_point": pre[min_idx],
+        "min_f_real_point": real[min_idx],
+        "mean_distance": np.mean(distances)
+    }
+
+    if show_plot:
+        fig, ax = plt.subplots(figsize=figsize)
+
+        for i in range(pre.shape[0]):
+            ax.annotate(
+                '',
+                xy=(real[i, 0], real[i, 1]),
+                xytext=(pre[i, 0], pre[i, 1]),
+                arrowprops=dict(
+                    arrowstyle='->',
+                    color='green',
+                    lw=1.0,
+                    alpha=0.8,
+                    shrinkA=0,
+                    shrinkB=0
+                )
+            )
+
+        ax.scatter(
+            pre[:, 0], pre[:, 1],
+            color='#87CEEB',
+            s=point_size,
+            alpha=0.8,
+            label='pre'
+        )
+
+        ax.scatter(
+            real[:, 0], real[:, 1],
+            color='#FF7F0E',
+            s=point_size,
+            alpha=0.8,
+            label='real'
+        )
+
+        ax.set_xlabel('F1')
+        ax.set_ylabel('F2')
+        if title is not None:
+            ax.set_title(title)
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+
+    print(f"Max:  {result['max_distance']:.2f}, sur={result['max_obj_point']}, real={result['max_f_real_point']}")
+    print(f"Min:  {result['min_distance']:.2f}, sur={result['min_obj_point']}, real={result['min_f_real_point']}")
+    print(f"Mean: {result['mean_distance']:.2f}")
+    print("-" * 50)
+
+    return result
