@@ -25,3 +25,12 @@ def find_alpha(X_val, y_val, model_kriging, target_coverage, alpha_max=50, alpha
         alpha += alpha_step
 
     return best_alpha
+
+
+def coverage_upper(y_true, y_upper):
+    y_true = np.asarray(y_true)
+    y_upper = np.asarray(y_upper)
+    inside = y_true <= y_upper
+    per_dim = inside.mean(axis=0)
+    overall = inside.mean()
+    return per_dim, overall

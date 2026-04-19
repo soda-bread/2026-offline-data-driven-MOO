@@ -1,5 +1,7 @@
 import numpy as np
 import GPy
+import pandas as pd
+from autogluon.tabular import TabularPredictor
 
 # Model: GPR_RBF
 class GPR_RBF:
@@ -103,3 +105,49 @@ def gpr_pred_mean_std(model_f1, model_f2, X_test, noiseless=False, verbose=True)
         print(f"[{tag}] Max pred_std\n", np.max(pred_std, axis=0))
 
     return pred_mean, pred_std, mean_f1, std_f1, mean_f2, std_f2
+
+
+def autogluon_qr_fit_predict(X_train, y_train, X_test, quantile_levels=None, random_state=42):
+    if quantile_levels is None:
+        quantile_levels = [0.5, 0.8, 0.9, 0.95]
+
+    train_df = pd.DataFrame(X_train, columns=[f"x{i}" for i in range(X_train.shape[1])])
+    train_df["target"] = y_train
+
+    model = TabularPredictor(
+        label="target",
+        problem_type="quantile",
+        quantile_levels=quantile_levels
+    ).fit(
+        train_data=train_df,
+        verbosity=0,
+        ag_args_fit={"random_state": random_state}
+    )
+
+    quantile_pred = autogluon_qr_predict(model, X_test)
+    return quantile_pred, model
+
+
+def autogluon_qr_predict(model, X):
+    test_df = pd.DataFrame(X, columns=[f"x{i}" for i in range(X.shape[1])])
+    pred = model.predict(test_df)
+    pred.columns = [f"y_q{q}" for q in pred.columns]
+    return pred
+
+
+def autogluon_qr_pred_mean_quantiles(model_f1, model_f2, X_test, verbose=True):
+    pred_y1 = autogluon_qr_predict(model_f1, X_test)
+    pred_y2 = autogluon_qr_predict(model_f2, X_test)
+
+    mean_q = np.stack([pred_y1["y_q0.5"].values, pred_y2["y_q0.5"].values], axis=1)
+    q80 = np.stack([pred_y1["y_q0.8"].values, pred_y2["y_q0.8"].values], axis=1)
+    q90 = np.stack([pred_y1["y_q0.9"].values, pred_y2["y_q0.9"].values], axis=1)
+    q95 = np.stack([pred_y1["y_q0.95"].values, pred_y2["y_q0.95"].values], axis=1)
+
+    if verbose:
+        print("[QR] y_q50\n", mean_q[:5])
+        print("[QR] y_q80\n", q80[:5])
+        print("[QR] y_q90\n", q90[:5])
+        print("[QR] y_q95\n", q95[:5])
+
+    return mean_q, q80, q90, q95
