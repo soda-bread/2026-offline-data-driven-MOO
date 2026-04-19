@@ -34,20 +34,32 @@ class Survival_standard(Survival):
         return pop[survivors]
 
 class Survival_dual_ranking(Survival):
-    def __init__(self, nds=None, crowding_func='cd', alpha_f1=1, alpha_f2=1):
+    def __init__(self, nds=None, crowding_func='cd', alpha_f1=1, alpha_f2=1, alpha=None):
         crowding_func_ = get_crowding_function(crowding_func)
         super().__init__(filter_infeasible=True)
         self.nds = nds if nds is not None else NonDominatedSorting()
         self.crowding_func = crowding_func_
         self.alpha_f1 = alpha_f1
         self.alpha_f2 = alpha_f2
+        self.alpha = alpha
 
     def _do(self, problem, pop, *args, random_state=None, n_survive=None, **kwargs):
         F = pop.get('F').astype(float, copy=False)
-        F_std = pop.get('std').astype(float, copy=False)
-        alphas = np.array([self.alpha_f1, self.alpha_f2])
-        F_upper = F + alphas * F_std
-        F_hybrid = np.concatenate([F, F_upper], axis=1)
+        if self.alpha is not None:
+            if self.alpha == 0.8:
+                F_upper = pop.get('F_q80').astype(float, copy=False)
+            elif self.alpha == 0.9:
+                F_upper = pop.get('F_q90').astype(float, copy=False)
+            elif self.alpha == 0.95:
+                F_upper = pop.get('F_q95').astype(float, copy=False)
+            else:
+                raise ValueError("alpha must be one of 0.8, 0.9, 0.95 for QR dual-ranking.")
+            F_hybrid = np.concatenate([F, F_upper], axis=1)
+        else:
+            F_std = pop.get('std').astype(float, copy=False)
+            alphas = np.array([self.alpha_f1, self.alpha_f2])
+            F_upper = F + alphas * F_std
+            F_hybrid = np.concatenate([F, F_upper], axis=1)
         fronts_hybrid = NonDominatedSorting().do(F_hybrid)
 
         survivors = []
