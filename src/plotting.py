@@ -117,10 +117,6 @@ def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show
     return result
 
 
-
-
-    import numpy as np
-
 def plot_z_score(y_test, pred_mean, pred_std, bins=30, eps=1e-12):
     y_test = np.asarray(y_test)
     pred_mean = np.asarray(pred_mean)
@@ -140,5 +136,19 @@ def plot_z_score(y_test, pred_mean, pred_std, bins=30, eps=1e-12):
         axes[i].set_xlabel("z")
 
     axes[0].set_ylabel("count")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_y_true_pred(y_true, y_pred):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(y_true[:, 0], y_true[:, 1], label="y_true")
+    plt.scatter(y_pred[:, 0], y_pred[:, 1], label="y_pred")
+    plt.xlabel("y1")
+    plt.ylabel("y2")
+    plt.legend()
     plt.tight_layout()
     plt.show()
