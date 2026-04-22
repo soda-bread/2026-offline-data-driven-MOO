@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+plotly
+scikit-learn
+pymoo
+GPy
+autogluon.tabular
+ipython
+jupyter
