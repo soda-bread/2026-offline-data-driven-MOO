@@ -77,9 +77,6 @@ def gpr_pred_mean_std(model_f1, model_f2, X_test, noiseless=False, verbose=True)
 
     if verbose:
         tag = "noiseless" if noiseless else "with_noise"
-        print(f"[{tag}] pred_mean\n", pred_mean[:5])
-        print(f"[{tag}] pred_std\n", pred_std[:5])
-        print(f"[{tag}] Max pred_std\n", np.max(pred_std, axis=0))
 
     return pred_mean, pred_std, mean_f1, std_f1, mean_f2, std_f2
 
