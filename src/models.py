@@ -11,46 +11,22 @@ class GPR_RBF:
 
     def fit(self, X, y):
         y = y.reshape(-1, 1)
-        kernel = GPy.kern.RBF(input_dim=X.shape[1],
-                              ARD=True)
+        kernel = GPy.kern.RBF(input_dim=X.shape[1],ARD=True)
         self.model = GPy.models.GPRegression(X, y, kernel, normalizer=True)
         self.model.optimize(messages=False)
 
-    def fit_reference(self, X, y):
+    def fit_high_bias_variance(self, X, y,lengthscale_weight):
         y = y.reshape(-1, 1)
-
         kernel = GPy.kern.RBF(input_dim=X.shape[1], ARD=True)
         self.model = GPy.models.GPRegression(X, y, kernel, normalizer=True)
         self.model.optimize(messages=False)
 
-        ls_ref = self.model.rbf.lengthscale.values.copy()
-        kv_ref = float(self.model.rbf.variance.values[0])
-        noise_ref = float(self.model.likelihood.variance.values[0])
-        return ls_ref, kv_ref, noise_ref
-
-    def fit_low_bias_high_variance(self, X, y, ls_ref, kv_ref, noise_ref):
-        y = y.reshape(-1, 1)
-
         kernel = GPy.kern.RBF(
             input_dim=X.shape[1],
             ARD=True,
-            variance=kv_ref,
-            lengthscale=ls_ref * 0.7)
-
+            variance=kernel.variance,
+            lengthscale=kernel.lengthscale * lengthscale_weight)
         self.model = GPy.models.GPRegression(X, y, kernel, normalizer=True)
-        self.model.likelihood.variance = noise_ref * 0.3
-
-    def fit_low_bias_low_variance(self, X, y, ls_ref, kv_ref, noise_ref):
-        y = y.reshape(-1, 1)
-
-        kernel = GPy.kern.RBF(
-            input_dim=X.shape[1],
-            ARD=True,
-            variance=kv_ref,
-            lengthscale=ls_ref * 1.3)
-
-        self.model = GPy.models.GPRegression(X, y, kernel, normalizer=True)
-        self.model.likelihood.variance = noise_ref * 3.0
 
     def predict(self, X):
         y_mean, y_var = self.model.predict(X, include_likelihood=True)
