@@ -39,83 +39,6 @@ def plot_obj_2d(F, xlim=(0, 1), ylim=(0, 1)):
         )
         fig.show()
 
-def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show_plot=True):
-    pre = np.asarray(pre, dtype=float)
-    real = np.asarray(real, dtype=float)
-
-    if pre.ndim != 2 or real.ndim != 2:
-        raise ValueError("pre and real must be 2D arrays.")
-    if pre.shape[1] != 2 or real.shape[1] != 2:
-        raise ValueError("pre and real must have shape (n, 2).")
-    if pre.shape[0] != real.shape[0]:
-        raise ValueError("pre and real must have the same number of rows.")
-
-    # row-wise Euclidean distance
-    distances = np.sqrt(np.sum((pre - real) ** 2, axis=1))
-
-    max_idx = np.argmax(distances)
-    min_idx = np.argmin(distances)
-
-    result = {
-        "distances": distances,
-        "max_distance": distances[max_idx],
-        "max_obj_point": pre[max_idx],
-        "max_f_real_point": real[max_idx],
-        "min_distance": distances[min_idx],
-        "min_obj_point": pre[min_idx],
-        "min_f_real_point": real[min_idx],
-        "mean_distance": np.mean(distances)
-    }
-
-    if show_plot:
-        fig, ax = plt.subplots(figsize=figsize)
-
-        for i in range(pre.shape[0]):
-            ax.annotate(
-                '',
-                xy=(real[i, 0], real[i, 1]),
-                xytext=(pre[i, 0], pre[i, 1]),
-                arrowprops=dict(
-                    arrowstyle='->',
-                    color='green',
-                    lw=1.0,
-                    alpha=0.8,
-                    shrinkA=0,
-                    shrinkB=0
-                )
-            )
-
-        ax.scatter(
-            pre[:, 0], pre[:, 1],
-            color='#87CEEB',
-            s=point_size,
-            alpha=0.8,
-            label='pre'
-        )
-
-        ax.scatter(
-            real[:, 0], real[:, 1],
-            color='#FF7F0E',
-            s=point_size,
-            alpha=0.8,
-            label='real'
-        )
-
-        ax.set_xlabel('F1')
-        ax.set_ylabel('F2')
-        if title is not None:
-            ax.set_title(title)
-        ax.legend()
-        plt.tight_layout()
-        plt.show()
-
-    print(f"Max:  {result['max_distance']:.2f}, sur={result['max_obj_point']}, real={result['max_f_real_point']}")
-    print(f"Min:  {result['min_distance']:.2f}, sur={result['min_obj_point']}, real={result['min_f_real_point']}")
-    print(f"Mean: {result['mean_distance']:.2f}")
-    print("-" * 50)
-
-    return result
-
 
 def plot_z_score(y_test, pred_mean, pred_std, bins=30, eps=1e-12):
     y_test = np.asarray(y_test)
@@ -152,3 +75,83 @@ def plot_y_true_pred(y_true, y_pred):
     plt.legend()
     plt.tight_layout()
     plt.show()
+
+def plot_hv_history(
+    results,
+    title="HV over Generations",
+    figsize=(7, 6),
+    line_width=2.0,
+    marker_size=4,
+    tick_fontsize=12,
+    label_fontsize=12,
+    title_fontsize=14,
+    legend_fontsize=11,
+    show_plot=True,
+    save_svg=True,
+    svg_path="hv_curve.svg",
+    show_legend=True,
+    show_axis_labels=True,
+    x_label="Generation",
+    y_label="HV",
+    xlim=(1, 100),
+    ylim=(0, 1.3)
+):
+    gen_list = np.asarray(results["gen_history"])
+    hv_sur_list = np.asarray(results["hv_sur_history"], dtype=float)
+    hv_real_list = np.asarray(results["hv_real_history"], dtype=float)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sur_label = "HV surrogate" if show_legend else None
+    real_label = "HV real" if show_legend else None
+
+    ax.plot(
+        gen_list,
+        hv_sur_list,
+        marker='s',
+        color="#1565C0",
+        linewidth=line_width,
+        markersize=marker_size,
+        label=sur_label
+    )
+
+    ax.plot(
+        gen_list,
+        hv_real_list,
+        marker='s',
+        color="#D55E00",
+        linewidth=line_width,
+        markersize=marker_size,
+        label=real_label
+    )
+
+    if show_axis_labels:
+        ax.set_xlabel(x_label, fontsize=label_fontsize)
+        ax.set_ylabel(y_label, fontsize=label_fontsize)
+
+    if title is not None:
+        ax.set_title(title, fontsize=title_fontsize)
+
+    if xlim is not None:
+        ax.set_xlim(xlim)
+
+    if ylim is not None:
+        ax.set_ylim(ylim)
+
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+
+    if show_legend:
+        ax.legend(fontsize=legend_fontsize)
+
+    plt.tight_layout()
+
+    if save_svg:
+        plt.savefig(svg_path, format="svg", bbox_inches="tight")
+        print(f"Figure saved as SVG: {svg_path}")
+
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
