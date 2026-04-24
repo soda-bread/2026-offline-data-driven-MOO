@@ -51,7 +51,6 @@ def run_experiment(
           obj_max=obj_max,
           hv_indicator=hv)
       minimize_kwargs["callback"] = callback_standard
-    
 
     mse_list = []
     igd_list = []
@@ -118,20 +117,40 @@ def run_experiment(
           f"Real HV: {hv_real:.2f} | "
           f"Max obj: {max_obj} | "
           f"Max f_real: {max_obj_real}")
+ 
+      if use_callback:
+          run_details.append({
+              "seed": seed,
+              "time": end_time - start_time,
+              "solution": solution,
+              "obj": obj,
+              "f_real": f_real,
+              "mse": mse,
+              "igd_plus": igd_plus_real,
+              "hv_surrogate": hv_surrogate,
+              "hv_real": hv_real,
+              "max_obj": max_obj,
+              "max_f_real": max_obj_real,
+              "result": res,
+              "gen_history": callback_standard.gen_list,
+              "hv_sur_history": callback_standard.hv_sur_list,
+              "hv_real_history": callback_standard.hv_real_list})
+      else:
+          run_details.append({
+              "seed": seed,
+              "time": end_time - start_time,
+              "solution": solution,
+              "obj": obj,
+              "f_real": f_real,
+              "mse": mse,
+              "igd_plus": igd_plus_real,
+              "hv_surrogate": hv_surrogate,
+              "hv_real": hv_real,
+              "max_obj": max_obj,
+              "max_f_real": max_obj_real,
+              "result": res})
 
-      run_details.append({
-          "seed": seed,
-          "time": end_time - start_time,
-          "solution": solution,
-          "obj": obj,
-          "f_real": f_real,
-          "mse": mse,
-          "igd_plus": igd_plus_real,
-          "hv_surrogate": hv_surrogate,
-          "hv_real": hv_real,
-          "max_obj": max_obj,
-          "max_f_real": max_obj_real,
-          "result": res})
+
 
     return {
         "mse_list": mse_list,
