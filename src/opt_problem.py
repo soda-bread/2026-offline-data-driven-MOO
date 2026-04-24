@@ -122,6 +122,10 @@ class EvaluatePreRealCallback(Callback):
         self.hv_indicator = hv_indicator
         self.records = []
 
+        self.gen_list = []
+        self.hv_sur_list = []
+        self.hv_real_list = []
+
     def notify(self, algorithm):
         gen = algorithm.n_gen
 
@@ -140,6 +144,10 @@ class EvaluatePreRealCallback(Callback):
             real_norm = (real - self.obj_min) / (self.obj_max - self.obj_min)
             hv_sur = float(self.hv_indicator.do(pre_norm))
             hv_real = float(self.hv_indicator.do(real_norm))
+        
+        self.gen_list.append(gen)
+        self.hv_sur_list.append(hv_sur)
+        self.hv_real_list.append(hv_real)
 
         if self.dynamic_show:
             clear_output(wait=True)
@@ -165,7 +173,21 @@ class EvaluatePreRealCallback(Callback):
             pre,
             real,
             title=f"{self.prefix} | Gen {gen}",
-            show_plot=True
+            show_plot=True)
+
+        if gen == 1 or gen == 100:
+          _ = evaluate_pre_real(
+            pre,
+            real,
+            show_plot=True,
+            show_legend=False,       
+            show_axis_labels=False,   
+            point_size=50,
+            tick_fontsize=22,
+            save_svg=True,
+            xlim=(-50, 600),
+            ylim=(-50, 600),
+            svg_path=f"figure_gen{gen}.svg",
         )
 
         self.records.append({
@@ -178,7 +200,26 @@ class EvaluatePreRealCallback(Callback):
             **result
         })
 
-def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show_plot=True):
+def evaluate_pre_real(
+    pre,
+    real,
+    title=None,
+    figsize=(7, 6),
+    point_size=20,
+    tick_fontsize=12,
+    label_fontsize=12,
+    title_fontsize=14,
+    legend_fontsize=11,
+    show_plot=True,
+    save_svg=False,
+    svg_path="figure.svg",
+    show_legend=True,       
+    show_axis_labels=True,   
+    x_label="F1",            
+    y_label="F2",
+    xlim=None,         
+    ylim=None            
+):
     pre = np.asarray(pre, dtype=float)
     real = np.asarray(real, dtype=float)
 
@@ -206,7 +247,7 @@ def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show
         "mean_distance": np.mean(distances)
     }
 
-    if show_plot:
+    if show_plot or save_svg:
         fig, ax = plt.subplots(figsize=figsize)
 
         for i in range(pre.shape[0]):
@@ -224,12 +265,15 @@ def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show
                 )
             )
 
+        pre_label = 'pre' if show_legend else None
+        real_label = 'real' if show_legend else None
+
         ax.scatter(
             pre[:, 0], pre[:, 1],
             color='#87CEEB',
             s=point_size,
             alpha=0.8,
-            label='pre'
+            label=pre_label
         )
 
         ax.scatter(
@@ -237,16 +281,36 @@ def evaluate_pre_real(pre, real, title=None, figsize=(7, 6), point_size=20, show
             color='#FF7F0E',
             s=point_size,
             alpha=0.8,
-            label='real'
+            label=real_label
         )
 
-        ax.set_xlabel('F1')
-        ax.set_ylabel('F2')
+        if show_axis_labels:
+            ax.set_xlabel(x_label, fontsize=label_fontsize)
+            ax.set_ylabel(y_label, fontsize=label_fontsize)
+
         if title is not None:
-            ax.set_title(title)
-        ax.legend()
+            ax.set_title(title, fontsize=title_fontsize)
+        
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
+        ax.tick_params(axis='both', labelsize=tick_fontsize)
+
+        if show_legend:
+            ax.legend(fontsize=legend_fontsize)
+
         plt.tight_layout()
-        plt.show()
+
+        if save_svg:
+            plt.savefig(svg_path, format='svg', bbox_inches='tight')
+            print(f"Figure saved as SVG: {svg_path}")
+
+        if show_plot:
+            plt.show()
+        else:
+            plt.close(fig)
 
     print(f"Max:  {result['max_distance']:.2f}, sur={result['max_obj_point']}, real={result['max_f_real_point']}")
     print(f"Min:  {result['min_distance']:.2f}, sur={result['min_obj_point']}, real={result['min_f_real_point']}")
