@@ -8,3 +8,4 @@ GPy
 autogluon.tabular
 ipython
 jupyter
+PyYAML
