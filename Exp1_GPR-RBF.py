@@ -5,10 +5,13 @@ for running the 30x bias-variance experiment.
 """
 
 import argparse
+import csv
 import warnings
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 from pymoo.operators.sampling.lhs import LHS
 from sklearn.metrics import mean_squared_error
 
@@ -24,6 +27,17 @@ from src.uncertainty import coverage, find_alpha
 
 warnings.filterwarnings("ignore", message=".*load_learner.*pickle.*")
 np.set_printoptions(precision=4, suppress=True)
+
+DEFAULT_CONFIG_PATH = Path("configs/exp1_gpr_rbf.yaml")
+
+
+def load_experiment_config(config_path):
+    with Path(config_path).open("r", encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    if "bias_variance_configs" not in config:
+        raise ValueError("YAML config must define bias_variance_configs.")
+    return config
 
 
 def prepare_problem(problem_name: str = "dtlz1", n_var: int = 10, n_obj: int = 2):
@@ -92,12 +106,20 @@ def run_high_bias_or_variance(X_train, y_train, X_test, y_test, lengthscale_weig
     if plot:
         plot_y_true_pred(y_test, pred_mean)
 
-    return pred_mean, pred_std
+    return model_f1, model_f2, pred_mean, pred_std
 
 
-def run_bias_variance_experiment(problem, sample_size: int, lengthscale_weight: float, n_runs: int = 30):
+def run_bias_variance_experiment(
+    problem,
+    sample_size: int,
+    lengthscale_weight: float,
+    model_type: str,
+    n_runs: int = 30,
+    return_records: bool = False,
+):
     preds = []
     y_test_ref = None
+    training_records = []
 
     for seed in range(1, n_runs + 1):
         X_train_i, y_train_i, _, _, X_test_i, y_test_i = sample_data(
@@ -123,6 +145,29 @@ def run_bias_variance_experiment(problem, sample_size: int, lengthscale_weight: 
         pred_mean_i, _, _, _, _, _ = gpr_pred_mean_std(model_f1_i, model_f2_i, X_test_i, noiseless=True)
         preds.append(pred_mean_i)
 
+        if return_records:
+            training_records.append({
+                "model_type": model_type,
+                "run": seed,
+                "train_seed": seed,
+                "lengthscale_weight": lengthscale_weight,
+                "test_mse": mean_squared_error(y_test_i, pred_mean_i),
+                "f1_lengthscale": np.array2string(
+                    model_f1_i.model.kern.lengthscale.values,
+                    precision=8,
+                    separator=" ",
+                ),
+                "f1_kernel_variance": float(model_f1_i.model.kern.variance.values[0]),
+                "f1_noise": float(model_f1_i.model.Gaussian_noise.variance.values[0]),
+                "f2_lengthscale": np.array2string(
+                    model_f2_i.model.kern.lengthscale.values,
+                    precision=8,
+                    separator=" ",
+                ),
+                "f2_kernel_variance": float(model_f2_i.model.kern.variance.values[0]),
+                "f2_noise": float(model_f2_i.model.Gaussian_noise.variance.values[0]),
+            })
+
         if y_test_ref is None:
             y_test_ref = y_test_i
 
@@ -130,6 +175,9 @@ def run_bias_variance_experiment(problem, sample_size: int, lengthscale_weight: 
     mean_pred = preds.mean(axis=0)
     bias = np.mean((mean_pred - y_test_ref) ** 2)
     variance = np.mean(np.var(preds, axis=0))
+
+    if return_records:
+        return bias, variance, training_records
     return bias, variance
 
 
@@ -154,7 +202,32 @@ def run_uncertainty_eval(y_test, pred_mean, pred_std, X_val, y_val, model_f1, mo
     return alpha_c90_f1, alpha_c90_f2
 
 
-def run_ea_experiment(problem, problem_name, n_gen, pop_size, model_f1, model_f2, obj_min, obj_max, hv, igd_plus):
+def summarize_ea_results(results):
+    mean_mse, std_mse = mean_std(results["mse_list"])
+    mean_igd, std_igd = mean_std(results["igd_list"])
+    mean_hv_real, std_hv_real = mean_std(results["hv_real_list"])
+    mean_hv_surrogate, std_hv_surrogate = mean_std(results["hv_surrogate_list"])
+
+    return {
+        "mse_mean": mean_mse,
+        "mse_std": std_mse,
+        "igd_plus_mean": mean_igd,
+        "igd_plus_std": std_igd,
+        "hv_surrogate_mean": mean_hv_surrogate,
+        "hv_surrogate_std": std_hv_surrogate,
+        "hv_real_mean": mean_hv_real,
+        "hv_real_std": std_hv_real,
+    }
+
+
+def print_ea_summary(summary):
+    print(f"MSE: Mean = {summary['mse_mean']:.2e}, Std = {summary['mse_std']:.2e}")
+    print(f"IGD+: Mean = {summary['igd_plus_mean']:.2e}, Std = {summary['igd_plus_std']:.2e}")
+    print(f"Sur HV: Mean = {summary['hv_surrogate_mean']:.2f}, Std = {summary['hv_surrogate_std']:.2f}")
+    print(f"Real HV: Mean = {summary['hv_real_mean']:.2f}, Std = {summary['hv_real_std']:.2f}")
+
+
+def run_ea_experiment(problem, problem_name, n_gen, pop_size, model_f1, model_f2, obj_min, obj_max, hv, igd_plus, seeds=range(1, 31)):
     results = run_experiment(
         problem=problem,
         problem_name=problem_name,
@@ -169,46 +242,125 @@ def run_ea_experiment(problem, problem_name, n_gen, pop_size, model_f1, model_f2
         use_surrogate="GPR_uncertainty",
         survival_function=Survival_standard(),
         use_callback=False,
-        seeds=range(1, 31),
+        seeds=seeds,
     )
 
-    mse_list = results["mse_list"]
-    igd_list = results["igd_list"]
-    hv_surrogate_list = results["hv_surrogate_list"]
-    hv_real_list = results["hv_real_list"]
+    summary = summarize_ea_results(results)
+    print_ea_summary(summary)
+    return summary, results
 
-    mean_mse, std_mse = mean_std(mse_list)
-    mean_igd, std_igd = mean_std(igd_list)
-    mean_hv_real, std_hv_real = mean_std(hv_real_list)
-    mean_hv_surrogate, std_hv_surrogate = mean_std(hv_surrogate_list)
 
-    print(f"MSE: Mean = {mean_mse:.2e}, Std = {std_mse:.2e}")
-    print(f"IGD+: Mean = {mean_igd:.2e}, Std = {std_igd:.2e}")
-    print(f"Sur HV: Mean = {mean_hv_surrogate:.2f}, Std = {std_hv_surrogate:.2f}")
-    print(f"Real HV: Mean = {mean_hv_real:.2f}, Std = {std_hv_real:.2f}")
+def write_rows_csv(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def run_ea_for_seed42_bias_variance_models(
+    problem,
+    problem_name,
+    n_gen,
+    pop_size,
+    seed42_models_by_type,
+    obj_min,
+    obj_max,
+    hv,
+    igd_plus,
+    output_dir,
+    seeds,
+):
+    output_dir = Path(output_dir)
+    summary_rows = []
+
+    for model_type, model_info in seed42_models_by_type.items():
+        print(f"\n=== EA for {problem_name} | seed=42 {model_type} model ===")
+
+        summary, _ = run_ea_experiment(
+            problem=problem,
+            problem_name=problem_name,
+            n_gen=n_gen,
+            pop_size=pop_size,
+            model_f1=model_info["model_f1"],
+            model_f2=model_info["model_f2"],
+            obj_min=obj_min,
+            obj_max=obj_max,
+            hv=hv,
+            igd_plus=igd_plus,
+            seeds=seeds,
+        )
+
+        row = {
+            "problem_name": problem_name,
+            "model_type": model_type,
+            "train_seed": 42,
+            "lengthscale_weight": model_info["lengthscale_weight"],
+            "bias": model_info["bias"],
+            "variance": model_info["variance"],
+            **summary,
+        }
+        summary_rows.append(row)
+        write_rows_csv(output_dir / "optimization_summary_seed42_bias_variance_models.csv", summary_rows)
+
+    return summary_rows
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run Exp1 GPR (RBF) notebook workflow as Python script.")
-    parser.add_argument("--problem_name", default="dtlz1")
-    parser.add_argument("--n_var", type=int, default=10)
-    parser.add_argument("--n_obj", type=int, default=2)
-    parser.add_argument("--n_gen", type=int, default=100)
-    parser.add_argument("--pop_size", type=int, default=100)
-    parser.add_argument("--n_runs", type=int, default=30, help="Runs for bias-variance experiment.")
-    parser.add_argument("--no_plot", action="store_true", help="Disable plotting calls.")
-    parser.add_argument("--run_ea", action="store_true", help="Run expensive EA experiment section.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="YAML experiment config file.")
+    parser.add_argument("--problem_name", default=None)
+    parser.add_argument("--n_var", type=int, default=None)
+    parser.add_argument("--n_obj", type=int, default=None)
+    parser.add_argument("--n_gen", type=int, default=None)
+    parser.add_argument("--pop_size", type=int, default=None)
+    parser.add_argument("--n_runs", type=int, default=None, help="Runs for bias-variance experiment.")
+    parser.add_argument("--no_plot", action="store_true", default=None, help="Disable plotting calls.")
+    parser.add_argument("--run_ea", action="store_true", default=None, help="Run expensive EA experiment section.")
+    parser.add_argument(
+        "--run_bias_variance_ea",
+        action="store_true",
+        default=None,
+        help="After the 30-run bias-variance experiment, run EA for seed=42 high-bias and high-variance models.",
+    )
+    parser.add_argument("--ea_seed_start", type=int, default=None)
+    parser.add_argument("--ea_seed_end", type=int, default=None, help="Exclusive end for EA seeds; default runs seeds 1..30.")
+    parser.add_argument("--output_dir", default=None)
     args = parser.parse_args()
 
-    plot = not args.no_plot
+    config = load_experiment_config(args.config)
+    problem_name = args.problem_name if args.problem_name is not None else config.get("problem_name", "dtlz1")
+    n_var = args.n_var if args.n_var is not None else config.get("n_var", 10)
+    n_obj = args.n_obj if args.n_obj is not None else config.get("n_obj", 2)
+    n_gen = args.n_gen if args.n_gen is not None else config.get("n_gen", 100)
+    pop_size = args.pop_size if args.pop_size is not None else config.get("pop_size", 100)
+    n_runs = args.n_runs if args.n_runs is not None else config.get("n_runs", 30)
+    no_plot = args.no_plot if args.no_plot is not None else config.get("no_plot", False)
+    run_ea = args.run_ea if args.run_ea is not None else config.get("run_ea", False)
+    run_bias_variance_ea = (
+        args.run_bias_variance_ea
+        if args.run_bias_variance_ea is not None
+        else config.get("run_bias_variance_ea", False)
+    )
+    ea_seed_start = args.ea_seed_start if args.ea_seed_start is not None else config.get("ea_seed_start", 1)
+    ea_seed_end = args.ea_seed_end if args.ea_seed_end is not None else config.get("ea_seed_end", 31)
+    output_dir = args.output_dir if args.output_dir is not None else config.get("output_dir", "outputs/exp1_gpr_rbf")
+    bias_variance_configs = config["bias_variance_configs"]
+
+    print(f"Loaded config: {args.config}")
+    plot = not no_plot
+    ea_seeds = range(ea_seed_start, ea_seed_end)
+    record_bias_variance_runs = run_bias_variance_ea
 
     problem, hv, igd_plus, obj_min, obj_max = prepare_problem(
-        problem_name=args.problem_name,
-        n_var=args.n_var,
-        n_obj=args.n_obj,
+        problem_name=problem_name,
+        n_var=n_var,
+        n_obj=n_obj,
     )
 
-    sample_size = 11 * args.n_var - 1
+    sample_size = 11 * n_var - 1
     X_train, y_train, X_val, y_val, X_test, y_test = sample_data(
         problem=problem,
         sample_size=sample_size,
@@ -228,34 +380,67 @@ def main():
         X_train, y_train, X_test, y_test, plot=plot
     )
 
-    print("\n=== High bias model (lengthscale_weight=10) ===")
-    run_high_bias_or_variance(
-        X_train, y_train, X_test, y_test, lengthscale_weight=10, plot=plot
-    )
+    seed42_models_by_type = {}
+    bias_variance_summary_rows = []
+    bias_variance_training_rows = []
 
-    print("\n=== High variance model (lengthscale_weight=0.1) ===")
-    run_high_bias_or_variance(
-        X_train, y_train, X_test, y_test, lengthscale_weight=0.1, plot=plot
-    )
+    for bv_config in bias_variance_configs:
+        model_type = bv_config["model_type"]
+        lengthscale_weight = bv_config["lengthscale_weight"]
 
-    high_bias_bias, high_bias_variance = run_bias_variance_experiment(
-        problem=problem,
-        sample_size=sample_size,
-        lengthscale_weight=10,
-        n_runs=args.n_runs,
-    )
-    high_var_bias, high_var_variance = run_bias_variance_experiment(
-        problem=problem,
-        sample_size=sample_size,
-        lengthscale_weight=0.1,
-        n_runs=args.n_runs,
-    )
-    print(
-        f"High bias model -> Bias: {high_bias_bias:.6e}, Variance: {high_bias_variance:.6e}"
-    )
-    print(
-        f"High variance model -> Bias: {high_var_bias:.6e}, Variance: {high_var_variance:.6e}"
-    )
+        print(f"\n=== {model_type} model (lengthscale_weight={lengthscale_weight:g}) ===")
+        seed42_model_f1, seed42_model_f2, _, _ = run_high_bias_or_variance(
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            lengthscale_weight=lengthscale_weight,
+            plot=plot,
+        )
+
+        result = run_bias_variance_experiment(
+            problem=problem,
+            sample_size=sample_size,
+            lengthscale_weight=lengthscale_weight,
+            model_type=model_type,
+            n_runs=n_runs,
+            return_records=record_bias_variance_runs,
+        )
+
+        if record_bias_variance_runs:
+            bias, variance, training_records = result
+            bias_variance_training_rows.extend(training_records)
+        else:
+            bias, variance = result
+
+        print(f"{model_type} model -> Bias: {bias:.6e}, Variance: {variance:.6e}")
+
+        bias_variance_summary_rows.append({
+            "problem_name": problem_name,
+            "model_type": model_type,
+            "n_runs": n_runs,
+            "lengthscale_weight": lengthscale_weight,
+            "bias": bias,
+            "variance": variance,
+        })
+        seed42_models_by_type[model_type] = {
+            "model_f1": seed42_model_f1,
+            "model_f2": seed42_model_f2,
+            "lengthscale_weight": lengthscale_weight,
+            "bias": bias,
+            "variance": variance,
+        }
+
+    if record_bias_variance_runs:
+        output_dir = Path(output_dir)
+        write_rows_csv(
+            output_dir / "bias_variance_training_records.csv",
+            bias_variance_training_rows,
+        )
+        write_rows_csv(
+            output_dir / "bias_variance_summary.csv",
+            bias_variance_summary_rows,
+        )
 
     alpha_c90_f1, alpha_c90_f2 = run_uncertainty_eval(
         y_test=y_test,
@@ -272,23 +457,40 @@ def main():
         plot=plot,
     )
 
-    if args.run_ea:
+    if run_ea:
         print("\n=== Running EA experiment (this may take a while) ===")
         run_ea_experiment(
             problem=problem,
-            problem_name=args.problem_name,
-            n_gen=args.n_gen,
-            pop_size=args.pop_size,
+            problem_name=problem_name,
+            n_gen=n_gen,
+            pop_size=pop_size,
             model_f1=model_f1,
             model_f2=model_f2,
             obj_min=obj_min,
             obj_max=obj_max,
             hv=hv,
             igd_plus=igd_plus,
+            seeds=ea_seeds,
         )
 
         # Optional: keep variables used in notebook dual-ranking section.
         _ = Survival_dual_ranking(alpha_f1=alpha_c90_f1, alpha_f2=alpha_c90_f2)
+
+    if run_bias_variance_ea:
+        print("\n=== Running EA for seed=42 bias-variance models ===")
+        run_ea_for_seed42_bias_variance_models(
+            problem=problem,
+            problem_name=problem_name,
+            n_gen=n_gen,
+            pop_size=pop_size,
+            seed42_models_by_type=seed42_models_by_type,
+            obj_min=obj_min,
+            obj_max=obj_max,
+            hv=hv,
+            igd_plus=igd_plus,
+            output_dir=output_dir,
+            seeds=ea_seeds,
+        )
 
     if plot:
         plt.show()
