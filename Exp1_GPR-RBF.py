@@ -173,12 +173,12 @@ def run_bias_variance_experiment(
 
     preds = np.array(preds)  # shape: (n_runs, n_test, n_obj)
     mean_pred = preds.mean(axis=0)
-    bias = np.mean((mean_pred - y_test_ref) ** 2)
+    bias_squared = np.mean((mean_pred - y_test_ref) ** 2)
     variance = np.mean(np.var(preds, axis=0))
 
     if return_records:
-        return bias, variance, training_records
-    return bias, variance
+        return bias_squared, variance, training_records
+    return bias_squared, variance
 
 
 def run_uncertainty_eval(y_test, pred_mean, pred_std, X_val, y_val, model_f1, model_f2, mean_f1, std_f1, mean_f2, std_f2, plot: bool = True):
@@ -298,7 +298,7 @@ def run_ea_for_seed42_bias_variance_models(
             "model_type": model_type,
             "train_seed": 42,
             "lengthscale_weight": model_info["lengthscale_weight"],
-            "bias": model_info["bias"],
+            "bias_squared": model_info["bias_squared"],
             "variance": model_info["variance"],
             **summary,
         }
@@ -408,26 +408,26 @@ def main():
         )
 
         if record_bias_variance_runs:
-            bias, variance, training_records = result
+            bias_squared, variance, training_records = result
             bias_variance_training_rows.extend(training_records)
         else:
-            bias, variance = result
+            bias_squared, variance = result
 
-        print(f"{model_type} model -> Bias: {bias:.6e}, Variance: {variance:.6e}")
+        print(f"{model_type} model -> Bias^2: {bias_squared:.6e}, Variance: {variance:.6e}")
 
         bias_variance_summary_rows.append({
             "problem_name": problem_name,
             "model_type": model_type,
             "n_runs": n_runs,
             "lengthscale_weight": lengthscale_weight,
-            "bias": bias,
+            "bias_squared": bias_squared,
             "variance": variance,
         })
         seed42_models_by_type[model_type] = {
             "model_f1": seed42_model_f1,
             "model_f2": seed42_model_f2,
             "lengthscale_weight": lengthscale_weight,
-            "bias": bias,
+            "bias_squared": bias_squared,
             "variance": variance,
         }
 
@@ -498,3 +498,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
