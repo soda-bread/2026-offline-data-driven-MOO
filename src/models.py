@@ -3,14 +3,16 @@ import GPy
 import pandas as pd
 from autogluon.tabular import TabularPredictor
 import torch
+import pyro
+import pyro.distributions as dist
+from pyro.infer import SVI, Trace_ELBO, Predictive
+from pyro.infer.autoguide import AutoDiagonalNormal
+from pyro.nn import PyroModule, PyroSample
+from pyro.optim import Adam
+from torch import nn
 
 
 def _get_pyro_bnn_class():
-    import pyro
-    import pyro.distributions as dist
-    from pyro.nn import PyroModule, PyroSample
-    from torch import nn
-
     class PyroBNN(PyroModule):
         def __init__(self, in_dim, h1, h2, fixed_sigma):
             super().__init__()
@@ -176,8 +178,6 @@ class BNNEnsembleRegressor:
         fixed_sigma=1e-3,
         eval_every=200,
         patience=10,
-        val_split=0.2,
-        min_val_size=32,
         num_val_samples=50,
         device=None,
     ):
@@ -191,18 +191,12 @@ class BNNEnsembleRegressor:
         self.fixed_sigma = fixed_sigma
         self.eval_every = eval_every
         self.patience = patience
-        self.val_split = val_split
-        self.min_val_size = min_val_size
         self.num_val_samples = num_val_samples
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.guide = None
 
-    def fit(self, X, y):
-        import pyro
-        from pyro.infer import SVI, Trace_ELBO
-        from pyro.infer.autoguide import AutoDiagonalNormal
-        from pyro.optim import Adam
+    def fit(self, X, y, X_val=None, y_val=None):
 
         torch.manual_seed(self.random_state)
         pyro.set_rng_seed(self.random_state)
@@ -210,27 +204,19 @@ class BNNEnsembleRegressor:
 
         X_np = np.asarray(X, dtype=np.float32)
         y_np = np.asarray(y, dtype=np.float32).reshape(-1)
-        n = X_np.shape[0]
-        val_size = max(int(n * self.val_split), self.min_val_size)
-        if n - val_size < 16:
-            val_size = max(0, n // 5)
-
-        if val_size > 0:
-            idx = np.arange(n)
-            rng = np.random.default_rng(self.random_state)
-            rng.shuffle(idx)
-            val_idx = idx[:val_size]
-            tr_idx = idx[val_size:]
-            X_train_np, y_train_np = X_np[tr_idx], y_np[tr_idx]
-            X_val_np, y_val_np = X_np[val_idx], y_np[val_idx]
-        else:
-            X_train_np, y_train_np = X_np, y_np
-            X_val_np, y_val_np = None, None
-
-        X_t = torch.tensor(X_train_np, dtype=torch.float32, device=self.device)
-        y_t = torch.tensor(y_train_np, dtype=torch.float32, device=self.device).reshape(-1)
+        X_t = torch.tensor(X_np, dtype=torch.float32, device=self.device)
+        y_t = torch.tensor(y_np, dtype=torch.float32, device=self.device).reshape(-1)
         h1, h2 = self.hidden_layer_sizes
         in_dim = X_t.shape[1]
+
+        use_validation = (X_val is not None) and (y_val is not None)
+        if use_validation:
+            X_val_np = np.asarray(X_val, dtype=np.float32)
+            y_val_np = np.asarray(y_val, dtype=np.float32).reshape(-1)
+            X_val_t = torch.tensor(X_val_np, dtype=torch.float32, device=self.device)
+            y_val_t = torch.tensor(y_val_np, dtype=torch.float32, device=self.device)
+        else:
+            X_val_t, y_val_t = None, None
 
         BNNClass = _get_pyro_bnn_class()
         self.model = BNNClass(in_dim, h1, h2, self.fixed_sigma).to(self.device)
@@ -244,13 +230,11 @@ class BNNEnsembleRegressor:
         for step in range(1, self.max_iter + 1):
             loss = svi.step(X_t, y_t)
             if step % self.eval_every == 0:
-                if X_val_np is not None:
+                if use_validation:
                     with torch.no_grad():
                         predictive = Predictive(self.model, guide=self.guide, num_samples=self.num_val_samples)
-                        X_val_t = torch.tensor(X_val_np, dtype=torch.float32, device=self.device)
                         samples = predictive(X_val_t)
                         mu = samples["mean"].mean(dim=0)
-                        y_val_t = torch.tensor(y_val_np, dtype=torch.float32, device=self.device)
                         score = ((mu - y_val_t) ** 2).mean().item()
                 else:
                     score = loss
@@ -270,8 +254,6 @@ class BNNEnsembleRegressor:
     def predict(self, X):
         if self.model is None or self.guide is None:
             raise ValueError("Model is not fitted yet.")
-        import pyro
-        from pyro.infer import Predictive
 
         X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
         predictive = Predictive(self.model, guide=self.guide, num_samples=self.n_estimators)
@@ -282,7 +264,6 @@ class BNNEnsembleRegressor:
     def predict_quantiles(self, X, quantiles=(0.8, 0.9, 0.95)):
         if self.model is None or self.guide is None:
             raise ValueError("Model is not fitted yet.")
-        from pyro.infer import Predictive
 
         X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
         predictive = Predictive(self.model, guide=self.guide, num_samples=self.n_estimators)
