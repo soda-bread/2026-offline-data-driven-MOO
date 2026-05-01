@@ -35,6 +35,64 @@ class BNN(PyroModule):
             pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y)
         return mu
 
+    def train_model(
+        self,
+        X_train,
+        y_train,
+        X_val=None,
+        y_val=None,
+        lr=1e-3,
+        max_steps=5000,
+        patience=10,
+        eval_every=200,
+        num_val_samples=50,
+        random_state=42,
+        device=None,
+    ):
+        device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(device)
+        torch.manual_seed(random_state)
+        pyro.set_rng_seed(random_state)
+        pyro.clear_param_store()
+
+        X_train = torch.as_tensor(X_train, dtype=torch.float32, device=device)
+        y_train = torch.as_tensor(y_train, dtype=torch.float32, device=device).reshape(-1)
+        use_val = (X_val is not None) and (y_val is not None)
+        if use_val:
+            X_val = torch.as_tensor(X_val, dtype=torch.float32, device=device)
+            y_val = torch.as_tensor(y_val, dtype=torch.float32, device=device).reshape(-1)
+
+        guide = AutoDiagonalNormal(self)
+        svi = SVI(self, guide, Adam({"lr": lr}), loss=Trace_ELBO())
+        best_score = float("inf")
+        best_state = None
+        wait = 0
+        for step in range(1, max_steps + 1):
+            loss = svi.step(X_train, y_train)
+            if step % eval_every != 0:
+                continue
+
+            if use_val:
+                pred = Predictive(self, guide=guide, num_samples=num_val_samples)(X_val)
+                mu = pred["mean"].mean(dim=0)
+                score = ((mu - y_val) ** 2).mean().item()
+            else:
+                score = loss
+
+            if score < best_score:
+                best_score = score
+                best_state = pyro.get_param_store().get_state()
+                wait = 0
+            else:
+                wait += 1
+            if wait >= patience:
+                break
+
+        if best_state is not None:
+            pyro.get_param_store().set_state(best_state)
+        self.guide = guide
+        return self, guide
+
     def predict(self, X, guide, num_samples=100, device=None):
         device = device or next(self.parameters()).device
         X_t = torch.tensor(X, dtype=torch.float32, device=device)
@@ -53,44 +111,20 @@ class BNN(PyroModule):
 
 
 def train_bnn(X_train, y_train, X_val=None, y_val=None, hidden=32, lr=1e-3, max_steps=5000, patience=10, eval_every=200, fixed_sigma=1e-3, num_val_samples=50, random_state=42, device=None):
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(random_state)
-    pyro.set_rng_seed(random_state)
-    pyro.clear_param_store()
-    X_train = torch.as_tensor(X_train, dtype=torch.float32, device=device)
-    y_train = torch.as_tensor(y_train, dtype=torch.float32, device=device).reshape(-1)
-    use_val = (X_val is not None) and (y_val is not None)
-    if use_val:
-        X_val = torch.as_tensor(X_val, dtype=torch.float32, device=device)
-        y_val = torch.as_tensor(y_val, dtype=torch.float32, device=device).reshape(-1)
-
-    model = BNN(in_dim=X_train.shape[1], hidden=hidden, fixed_sigma=fixed_sigma).to(device)
-    guide = AutoDiagonalNormal(model)
-    svi = SVI(model, guide, Adam({"lr": lr}), loss=Trace_ELBO())
-    best_score = float("inf")
-    best_state = None
-    wait = 0
-    for step in range(1, max_steps + 1):
-        loss = svi.step(X_train, y_train)
-        if step % eval_every == 0:
-            if use_val:
-                pred = Predictive(model, guide=guide, num_samples=num_val_samples)(X_val)
-                mu = pred["mean"].mean(dim=0)
-                score = ((mu - y_val) ** 2).mean().item()
-            else:
-                score = loss
-            if score < best_score:
-                best_score = score
-                best_state = pyro.get_param_store().get_state()
-                wait = 0
-            else:
-                wait += 1
-            if wait >= patience:
-                break
-    if best_state is not None:
-        pyro.get_param_store().set_state(best_state)
-    model.guide = guide
-    return model, guide
+    model = BNN(in_dim=np.asarray(X_train).shape[1], hidden=hidden, fixed_sigma=fixed_sigma)
+    return model.train_model(
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        lr=lr,
+        max_steps=max_steps,
+        patience=patience,
+        eval_every=eval_every,
+        num_val_samples=num_val_samples,
+        random_state=random_state,
+        device=device,
+    )
 
 # Model: GPR_RBF
 class GPR_RBF:
