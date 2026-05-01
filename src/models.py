@@ -2,7 +2,129 @@ import numpy as np
 import GPy
 import pandas as pd
 from autogluon.tabular import TabularPredictor
-from sklearn.neural_network import MLPRegressor
+import torch
+import pyro
+import pyro.distributions as dist
+from pyro.infer import SVI, Trace_ELBO, Predictive
+from pyro.infer.autoguide import AutoDiagonalNormal
+from pyro.nn import PyroModule, PyroSample
+from pyro.optim import Adam
+from torch import nn
+
+
+class BNN(PyroModule):
+    def __init__(self, in_dim, hidden=32, out_dim=1, fixed_sigma=1e-3):
+        super().__init__()
+        self.fc1 = PyroModule[nn.Linear](in_dim, hidden)
+        self.fc1.weight = PyroSample(dist.Normal(0., 0.5).expand([hidden, in_dim]).to_event(2))
+        self.fc1.bias = PyroSample(dist.Normal(0., 0.5).expand([hidden]).to_event(1))
+        self.fc2 = PyroModule[nn.Linear](hidden, hidden)
+        self.fc2.weight = PyroSample(dist.Normal(0., 0.5).expand([hidden, hidden]).to_event(2))
+        self.fc2.bias = PyroSample(dist.Normal(0., 0.5).expand([hidden]).to_event(1))
+        self.out = PyroModule[nn.Linear](hidden, out_dim)
+        self.out.weight = PyroSample(dist.Normal(0., 0.5).expand([out_dim, hidden]).to_event(2))
+        self.out.bias = PyroSample(dist.Normal(0., 0.5).expand([out_dim]).to_event(1))
+        self.sigma = fixed_sigma
+
+    def forward(self, x, y=None):
+        x = torch.tanh(self.fc1(x))
+        x = torch.tanh(self.fc2(x))
+        mu = self.out(x).squeeze(-1)
+        pyro.deterministic("mean", mu)
+        with pyro.plate("data", x.shape[0]):
+            pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y)
+        return mu
+
+    def train_model(
+        self,
+        X_train,
+        y_train,
+        X_val=None,
+        y_val=None,
+        lr=1e-3,
+        max_steps=5000,
+        patience=10,
+        eval_every=200,
+        num_val_samples=50,
+        random_state=42,
+        device=None,
+    ):
+        device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(device)
+        torch.manual_seed(random_state)
+        pyro.set_rng_seed(random_state)
+        pyro.clear_param_store()
+
+        X_train = torch.as_tensor(X_train, dtype=torch.float32, device=device)
+        y_train = torch.as_tensor(y_train, dtype=torch.float32, device=device).reshape(-1)
+        use_val = (X_val is not None) and (y_val is not None)
+        if use_val:
+            X_val = torch.as_tensor(X_val, dtype=torch.float32, device=device)
+            y_val = torch.as_tensor(y_val, dtype=torch.float32, device=device).reshape(-1)
+
+        guide = AutoDiagonalNormal(self)
+        svi = SVI(self, guide, Adam({"lr": lr}), loss=Trace_ELBO())
+        best_score = float("inf")
+        best_state = None
+        wait = 0
+        for step in range(1, max_steps + 1):
+            loss = svi.step(X_train, y_train)
+            if step % eval_every != 0:
+                continue
+
+            if use_val:
+                pred = Predictive(self, guide=guide, num_samples=num_val_samples)(X_val)
+                mu = pred["mean"].mean(dim=0)
+                score = ((mu - y_val) ** 2).mean().item()
+            else:
+                score = loss
+
+            if score < best_score:
+                best_score = score
+                best_state = pyro.get_param_store().get_state()
+                wait = 0
+            else:
+                wait += 1
+            if wait >= patience:
+                break
+
+        if best_state is not None:
+            pyro.get_param_store().set_state(best_state)
+        self.guide = guide
+        return self, guide
+
+    def predict(self, X, guide, num_samples=100, device=None):
+        device = device or next(self.parameters()).device
+        X_t = torch.tensor(X, dtype=torch.float32, device=device)
+        predictive = Predictive(self, guide=guide, num_samples=num_samples)
+        samples = predictive(X_t)["obs"].detach().cpu().numpy()
+        return samples.mean(axis=0), samples.std(axis=0)
+
+    def predict_quantiles(self, X, guide, quantiles=(0.8, 0.9, 0.95), num_samples=100, device=None):
+        device = device or next(self.parameters()).device
+        X_t = torch.tensor(X, dtype=torch.float32, device=device)
+        predictive = Predictive(self, guide=guide, num_samples=num_samples)
+        samples = predictive(X_t)["obs"].detach().cpu().numpy()
+        mean = samples.mean(axis=0)
+        q_map = {q: np.percentile(samples, q * 100.0, axis=0) for q in quantiles}
+        return mean, q_map
+
+
+def train_bnn(X_train, y_train, X_val=None, y_val=None, hidden=32, lr=1e-3, max_steps=5000, patience=10, eval_every=200, fixed_sigma=1e-3, num_val_samples=50, random_state=42, device=None):
+    model = BNN(in_dim=np.asarray(X_train).shape[1], hidden=hidden, fixed_sigma=fixed_sigma)
+    return model.train_model(
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        lr=lr,
+        max_steps=max_steps,
+        patience=patience,
+        eval_every=eval_every,
+        num_val_samples=num_val_samples,
+        random_state=random_state,
+        device=device,
+    )
 
 # Model: GPR_RBF
 class GPR_RBF:
@@ -127,39 +249,9 @@ def autogluon_qr_pred_mean_quantiles(model_f1, model_f2, X_test, verbose=True):
     return mean_q, q80, q90, q95
 
 
-class BNNEnsembleRegressor:
-    def __init__(self, hidden_layer_sizes=(64, 64), n_estimators=5, max_iter=2000, random_state=42):
-        self.hidden_layer_sizes = hidden_layer_sizes
-        self.n_estimators = n_estimators
-        self.max_iter = max_iter
-        self.random_state = random_state
-        self.models = []
-
-    def fit(self, X, y):
-        self.models = []
-        for i in range(self.n_estimators):
-            model = MLPRegressor(
-                hidden_layer_sizes=self.hidden_layer_sizes,
-                activation="relu",
-                solver="adam",
-                max_iter=self.max_iter,
-                random_state=self.random_state + i
-            )
-            model.fit(X, y)
-            self.models.append(model)
-
-    def predict(self, X):
-        if len(self.models) == 0:
-            raise ValueError("Model is not fitted yet.")
-        preds = np.stack([m.predict(X) for m in self.models], axis=1)
-        mean = preds.mean(axis=1)
-        std = preds.std(axis=1)
-        return mean, std
-
-
 def bnn_pred_mean_std(model_f1, model_f2, X_test, verbose=True):
-    mean_f1, std_f1 = model_f1.predict(X_test)
-    mean_f2, std_f2 = model_f2.predict(X_test)
+    mean_f1, std_f1 = model_f1.predict(X_test, guide=model_f1.guide)
+    mean_f2, std_f2 = model_f2.predict(X_test, guide=model_f2.guide)
 
     mean_f1 = np.asarray(mean_f1).reshape(-1)
     std_f1 = np.asarray(std_f1).reshape(-1)
