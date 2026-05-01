@@ -4,6 +4,40 @@ import pandas as pd
 from autogluon.tabular import TabularPredictor
 import torch
 
+
+def _get_pyro_bnn_class():
+    import pyro
+    import pyro.distributions as dist
+    from pyro.nn import PyroModule, PyroSample
+    from torch import nn
+
+    class PyroBNN(PyroModule):
+        def __init__(self, in_dim, h1, h2, fixed_sigma):
+            super().__init__()
+            self.fc1 = PyroModule[nn.Linear](in_dim, h1)
+            self.fc1.weight = PyroSample(dist.Normal(0., 0.5).expand([h1, in_dim]).to_event(2))
+            self.fc1.bias = PyroSample(dist.Normal(0., 0.5).expand([h1]).to_event(1))
+
+            self.fc2 = PyroModule[nn.Linear](h1, h2)
+            self.fc2.weight = PyroSample(dist.Normal(0., 0.5).expand([h2, h1]).to_event(2))
+            self.fc2.bias = PyroSample(dist.Normal(0., 0.5).expand([h2]).to_event(1))
+
+            self.out = PyroModule[nn.Linear](h2, 1)
+            self.out.weight = PyroSample(dist.Normal(0., 0.5).expand([1, h2]).to_event(2))
+            self.out.bias = PyroSample(dist.Normal(0., 0.5).expand([1]).to_event(1))
+            self.sigma = fixed_sigma
+
+        def forward(self, x, y_obs=None):
+            x = torch.tanh(self.fc1(x))
+            x = torch.tanh(self.fc2(x))
+            mu = self.out(x).squeeze(-1)
+            pyro.deterministic("mean", mu)
+            with pyro.plate("data", x.shape[0]):
+                pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y_obs)
+            return mu
+
+    return PyroBNN
+
 # Model: GPR_RBF
 class GPR_RBF:
     def __init__(self):
@@ -166,12 +200,9 @@ class BNNEnsembleRegressor:
 
     def fit(self, X, y):
         import pyro
-        import pyro.distributions as dist
         from pyro.infer import SVI, Trace_ELBO
         from pyro.infer.autoguide import AutoDiagonalNormal
-        from pyro.nn import PyroModule, PyroSample
         from pyro.optim import Adam
-        from torch import nn
 
         torch.manual_seed(self.random_state)
         pyro.set_rng_seed(self.random_state)
@@ -201,32 +232,8 @@ class BNNEnsembleRegressor:
         h1, h2 = self.hidden_layer_sizes
         in_dim = X_t.shape[1]
 
-        class _BNN(PyroModule):
-            def __init__(self, in_dim_, h1_, h2_, fixed_sigma_):
-                super().__init__()
-                self.fc1 = PyroModule[nn.Linear](in_dim_, h1_)
-                self.fc1.weight = PyroSample(dist.Normal(0., 0.5).expand([h1_, in_dim_]).to_event(2))
-                self.fc1.bias = PyroSample(dist.Normal(0., 0.5).expand([h1_]).to_event(1))
-
-                self.fc2 = PyroModule[nn.Linear](h1_, h2_)
-                self.fc2.weight = PyroSample(dist.Normal(0., 0.5).expand([h2_, h1_]).to_event(2))
-                self.fc2.bias = PyroSample(dist.Normal(0., 0.5).expand([h2_]).to_event(1))
-
-                self.out = PyroModule[nn.Linear](h2_, 1)
-                self.out.weight = PyroSample(dist.Normal(0., 0.5).expand([1, h2_]).to_event(2))
-                self.out.bias = PyroSample(dist.Normal(0., 0.5).expand([1]).to_event(1))
-                self.sigma = fixed_sigma_
-
-            def forward(self, x, y_obs=None):
-                x = torch.tanh(self.fc1(x))
-                x = torch.tanh(self.fc2(x))
-                mu = self.out(x).squeeze(-1)
-                pyro.deterministic("mean", mu)
-                with pyro.plate("data", x.shape[0]):
-                    pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y_obs)
-                return mu
-
-        self.model = _BNN(in_dim, h1, h2, self.fixed_sigma).to(self.device)
+        BNNClass = _get_pyro_bnn_class()
+        self.model = BNNClass(in_dim, h1, h2, self.fixed_sigma).to(self.device)
         self.guide = AutoDiagonalNormal(self.model)
         optimizer = Adam({"lr": self.lr})
         svi = SVI(self.model, self.guide, optimizer, loss=Trace_ELBO())
