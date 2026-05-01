@@ -12,33 +12,68 @@ from pyro.optim import Adam
 from torch import nn
 
 
-def _get_pyro_bnn_class():
-    class PyroBNN(PyroModule):
-        def __init__(self, in_dim, h1, h2, fixed_sigma):
-            super().__init__()
-            self.fc1 = PyroModule[nn.Linear](in_dim, h1)
-            self.fc1.weight = PyroSample(dist.Normal(0., 0.5).expand([h1, in_dim]).to_event(2))
-            self.fc1.bias = PyroSample(dist.Normal(0., 0.5).expand([h1]).to_event(1))
+class BNN(PyroModule):
+    def __init__(self, in_dim, hidden=32, out_dim=1, fixed_sigma=1e-3):
+        super().__init__()
+        self.fc1 = PyroModule[nn.Linear](in_dim, hidden)
+        self.fc1.weight = PyroSample(dist.Normal(0., 0.5).expand([hidden, in_dim]).to_event(2))
+        self.fc1.bias = PyroSample(dist.Normal(0., 0.5).expand([hidden]).to_event(1))
+        self.fc2 = PyroModule[nn.Linear](hidden, hidden)
+        self.fc2.weight = PyroSample(dist.Normal(0., 0.5).expand([hidden, hidden]).to_event(2))
+        self.fc2.bias = PyroSample(dist.Normal(0., 0.5).expand([hidden]).to_event(1))
+        self.out = PyroModule[nn.Linear](hidden, out_dim)
+        self.out.weight = PyroSample(dist.Normal(0., 0.5).expand([out_dim, hidden]).to_event(2))
+        self.out.bias = PyroSample(dist.Normal(0., 0.5).expand([out_dim]).to_event(1))
+        self.sigma = fixed_sigma
 
-            self.fc2 = PyroModule[nn.Linear](h1, h2)
-            self.fc2.weight = PyroSample(dist.Normal(0., 0.5).expand([h2, h1]).to_event(2))
-            self.fc2.bias = PyroSample(dist.Normal(0., 0.5).expand([h2]).to_event(1))
+    def forward(self, x, y=None):
+        x = torch.tanh(self.fc1(x))
+        x = torch.tanh(self.fc2(x))
+        mu = self.out(x).squeeze(-1)
+        pyro.deterministic("mean", mu)
+        with pyro.plate("data", x.shape[0]):
+            pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y)
+        return mu
 
-            self.out = PyroModule[nn.Linear](h2, 1)
-            self.out.weight = PyroSample(dist.Normal(0., 0.5).expand([1, h2]).to_event(2))
-            self.out.bias = PyroSample(dist.Normal(0., 0.5).expand([1]).to_event(1))
-            self.sigma = fixed_sigma
 
-        def forward(self, x, y_obs=None):
-            x = torch.tanh(self.fc1(x))
-            x = torch.tanh(self.fc2(x))
-            mu = self.out(x).squeeze(-1)
-            pyro.deterministic("mean", mu)
-            with pyro.plate("data", x.shape[0]):
-                pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y_obs)
-            return mu
+def train_bnn(X_train, y_train, X_val=None, y_val=None, hidden=32, lr=1e-3, max_steps=5000, patience=10, eval_every=200, fixed_sigma=1e-3, num_val_samples=50, random_state=42, device=None):
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(random_state)
+    pyro.set_rng_seed(random_state)
+    pyro.clear_param_store()
+    X_train = torch.as_tensor(X_train, dtype=torch.float32, device=device)
+    y_train = torch.as_tensor(y_train, dtype=torch.float32, device=device).reshape(-1)
+    use_val = (X_val is not None) and (y_val is not None)
+    if use_val:
+        X_val = torch.as_tensor(X_val, dtype=torch.float32, device=device)
+        y_val = torch.as_tensor(y_val, dtype=torch.float32, device=device).reshape(-1)
 
-    return PyroBNN
+    model = BNN(in_dim=X_train.shape[1], hidden=hidden, fixed_sigma=fixed_sigma).to(device)
+    guide = AutoDiagonalNormal(model)
+    svi = SVI(model, guide, Adam({"lr": lr}), loss=Trace_ELBO())
+    best_score = float("inf")
+    best_state = None
+    wait = 0
+    for step in range(1, max_steps + 1):
+        loss = svi.step(X_train, y_train)
+        if step % eval_every == 0:
+            if use_val:
+                pred = Predictive(model, guide=guide, num_samples=num_val_samples)(X_val)
+                mu = pred["mean"].mean(dim=0)
+                score = ((mu - y_val) ** 2).mean().item()
+            else:
+                score = loss
+            if score < best_score:
+                best_score = score
+                best_state = pyro.get_param_store().get_state()
+                wait = 0
+            else:
+                wait += 1
+            if wait >= patience:
+                break
+    if best_state is not None:
+        pyro.get_param_store().set_state(best_state)
+    return model, guide
 
 # Model: GPR_RBF
 class GPR_RBF:
@@ -197,59 +232,22 @@ class BNNEnsembleRegressor:
         self.guide = None
 
     def fit(self, X, y, X_val=None, y_val=None):
-
-        torch.manual_seed(self.random_state)
-        pyro.set_rng_seed(self.random_state)
-        pyro.clear_param_store()
-
-        X_np = np.asarray(X, dtype=np.float32)
-        y_np = np.asarray(y, dtype=np.float32).reshape(-1)
-        X_t = torch.tensor(X_np, dtype=torch.float32, device=self.device)
-        y_t = torch.tensor(y_np, dtype=torch.float32, device=self.device).reshape(-1)
-        h1, h2 = self.hidden_layer_sizes
-        in_dim = X_t.shape[1]
-
-        use_validation = (X_val is not None) and (y_val is not None)
-        if use_validation:
-            X_val_np = np.asarray(X_val, dtype=np.float32)
-            y_val_np = np.asarray(y_val, dtype=np.float32).reshape(-1)
-            X_val_t = torch.tensor(X_val_np, dtype=torch.float32, device=self.device)
-            y_val_t = torch.tensor(y_val_np, dtype=torch.float32, device=self.device)
-        else:
-            X_val_t, y_val_t = None, None
-
-        BNNClass = _get_pyro_bnn_class()
-        self.model = BNNClass(in_dim, h1, h2, self.fixed_sigma).to(self.device)
-        self.guide = AutoDiagonalNormal(self.model)
-        optimizer = Adam({"lr": self.lr})
-        svi = SVI(self.model, self.guide, optimizer, loss=Trace_ELBO())
-
-        best_loss = float("inf")
-        best_state = None
-        no_improve = 0
-        for step in range(1, self.max_iter + 1):
-            loss = svi.step(X_t, y_t)
-            if step % self.eval_every == 0:
-                if use_validation:
-                    with torch.no_grad():
-                        predictive = Predictive(self.model, guide=self.guide, num_samples=self.num_val_samples)
-                        samples = predictive(X_val_t)
-                        mu = samples["mean"].mean(dim=0)
-                        score = ((mu - y_val_t) ** 2).mean().item()
-                else:
-                    score = loss
-
-                if score < best_loss:
-                    best_loss = score
-                    best_state = pyro.get_param_store().get_state()
-                    no_improve = 0
-                else:
-                    no_improve += 1
-                if no_improve >= self.patience:
-                    break
-
-        if best_state is not None:
-            pyro.get_param_store().set_state(best_state)
+        hidden = self.hidden_layer_sizes[0]
+        self.model, self.guide = train_bnn(
+            X_train=X,
+            y_train=y,
+            X_val=X_val,
+            y_val=y_val,
+            hidden=hidden,
+            lr=self.lr,
+            max_steps=self.max_iter,
+            patience=self.patience,
+            eval_every=self.eval_every,
+            fixed_sigma=self.fixed_sigma,
+            num_val_samples=self.num_val_samples,
+            random_state=self.random_state,
+            device=self.device,
+        )
 
     def predict(self, X):
         if self.model is None or self.guide is None:
