@@ -2,7 +2,7 @@ import numpy as np
 import GPy
 import pandas as pd
 from autogluon.tabular import TabularPredictor
-from sklearn.neural_network import MLPRegressor
+import torch
 
 # Model: GPR_RBF
 class GPR_RBF:
@@ -128,33 +128,113 @@ def autogluon_qr_pred_mean_quantiles(model_f1, model_f2, X_test, verbose=True):
 
 
 class BNNEnsembleRegressor:
-    def __init__(self, hidden_layer_sizes=(64, 64), n_estimators=5, max_iter=2000, random_state=42):
+    """
+    Pyro-based Bayesian neural network regressor.
+    Kept class name for backward compatibility with existing notebooks/scripts.
+    """
+    def __init__(
+        self,
+        hidden_layer_sizes=(64, 64),
+        n_estimators=100,
+        max_iter=5000,
+        random_state=42,
+        lr=1e-3,
+        fixed_sigma=1e-3,
+        eval_every=200,
+        patience=10,
+        device=None,
+    ):
+        if len(hidden_layer_sizes) != 2:
+            raise ValueError("hidden_layer_sizes must contain exactly two hidden layer sizes, e.g. (32, 32).")
         self.hidden_layer_sizes = hidden_layer_sizes
-        self.n_estimators = n_estimators
+        self.n_estimators = n_estimators  # used as posterior predictive samples at inference time
         self.max_iter = max_iter
         self.random_state = random_state
-        self.models = []
+        self.lr = lr
+        self.fixed_sigma = fixed_sigma
+        self.eval_every = eval_every
+        self.patience = patience
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = None
+        self.guide = None
 
     def fit(self, X, y):
-        self.models = []
-        for i in range(self.n_estimators):
-            model = MLPRegressor(
-                hidden_layer_sizes=self.hidden_layer_sizes,
-                activation="relu",
-                solver="adam",
-                max_iter=self.max_iter,
-                random_state=self.random_state + i
-            )
-            model.fit(X, y)
-            self.models.append(model)
+        import pyro
+        import pyro.distributions as dist
+        from pyro.infer import SVI, Trace_ELBO
+        from pyro.infer.autoguide import AutoDiagonalNormal
+        from pyro.nn import PyroModule, PyroSample
+        from pyro.optim import Adam
+        from torch import nn
+
+        torch.manual_seed(self.random_state)
+        pyro.set_rng_seed(self.random_state)
+        pyro.clear_param_store()
+
+        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
+        y_t = torch.tensor(y, dtype=torch.float32, device=self.device).reshape(-1)
+        h1, h2 = self.hidden_layer_sizes
+        in_dim = X_t.shape[1]
+
+        class _BNN(PyroModule):
+            def __init__(self, in_dim_, h1_, h2_, fixed_sigma_):
+                super().__init__()
+                self.fc1 = PyroModule[nn.Linear](in_dim_, h1_)
+                self.fc1.weight = PyroSample(dist.Normal(0., 0.5).expand([h1_, in_dim_]).to_event(2))
+                self.fc1.bias = PyroSample(dist.Normal(0., 0.5).expand([h1_]).to_event(1))
+
+                self.fc2 = PyroModule[nn.Linear](h1_, h2_)
+                self.fc2.weight = PyroSample(dist.Normal(0., 0.5).expand([h2_, h1_]).to_event(2))
+                self.fc2.bias = PyroSample(dist.Normal(0., 0.5).expand([h2_]).to_event(1))
+
+                self.out = PyroModule[nn.Linear](h2_, 1)
+                self.out.weight = PyroSample(dist.Normal(0., 0.5).expand([1, h2_]).to_event(2))
+                self.out.bias = PyroSample(dist.Normal(0., 0.5).expand([1]).to_event(1))
+                self.sigma = fixed_sigma_
+
+            def forward(self, x, y_obs=None):
+                x = torch.tanh(self.fc1(x))
+                x = torch.tanh(self.fc2(x))
+                mu = self.out(x).squeeze(-1)
+                pyro.deterministic("mean", mu)
+                with pyro.plate("data", x.shape[0]):
+                    pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y_obs)
+                return mu
+
+        self.model = _BNN(in_dim, h1, h2, self.fixed_sigma).to(self.device)
+        self.guide = AutoDiagonalNormal(self.model)
+        optimizer = Adam({"lr": self.lr})
+        svi = SVI(self.model, self.guide, optimizer, loss=Trace_ELBO())
+
+        best_loss = float("inf")
+        best_state = None
+        no_improve = 0
+        for step in range(1, self.max_iter + 1):
+            loss = svi.step(X_t, y_t)
+            if step % self.eval_every == 0:
+                if loss < best_loss:
+                    best_loss = loss
+                    best_state = pyro.get_param_store().get_state()
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if no_improve >= self.patience:
+                    break
+
+        if best_state is not None:
+            pyro.get_param_store().set_state(best_state)
 
     def predict(self, X):
-        if len(self.models) == 0:
+        if self.model is None or self.guide is None:
             raise ValueError("Model is not fitted yet.")
-        preds = np.stack([m.predict(X) for m in self.models], axis=1)
-        mean = preds.mean(axis=1)
-        std = preds.std(axis=1)
-        return mean, std
+        import pyro
+        from pyro.infer import Predictive
+
+        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
+        predictive = Predictive(self.model, guide=self.guide, num_samples=self.n_estimators)
+        samples = predictive(X_t)
+        obs_samples = samples["obs"].detach().cpu().numpy()
+        return obs_samples.mean(axis=0), obs_samples.std(axis=0)
 
 
 def bnn_pred_mean_std(model_f1, model_f2, X_test, verbose=True):
