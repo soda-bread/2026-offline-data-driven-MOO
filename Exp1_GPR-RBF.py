@@ -6,7 +6,6 @@ for running the 30x bias-variance experiment.
 
 import argparse
 import csv
-import time
 import warnings
 from pathlib import Path
 
@@ -276,13 +275,12 @@ def run_ea_for_seed42_bias_variance_models(
 ):
     output_dir = Path(output_dir)
     summary_rows = []
-    optimization_runtimes = []
+    block_runtime_stats = []
 
     for exp_idx, (model_type, model_info) in enumerate(seed42_models_by_type.items(), start=1):
         print(f"\n=== EA for {problem_name} | seed=42 {model_type} model (Exp{exp_idx}) ===")
 
-        start_time = time.perf_counter()
-        summary, _ = run_ea_experiment(
+        summary, results = run_ea_experiment(
             problem=problem,
             problem_name=problem_name,
             n_gen=n_gen,
@@ -295,9 +293,22 @@ def run_ea_for_seed42_bias_variance_models(
             igd_plus=igd_plus,
             seeds=seeds,
         )
-        elapsed_sec = time.perf_counter() - start_time
-        optimization_runtimes.append(elapsed_sec)
-        print(f"Exp{exp_idx} runtime: {elapsed_sec:.2f}s")
+        seed_runtimes = [run_detail["time"] for run_detail in results["run_details"]]
+        runtime_mean = float(np.mean(seed_runtimes))
+        runtime_std = float(np.std(seed_runtimes))
+        block_runtime_stats.append(
+            {
+                "exp_idx": exp_idx,
+                "model_type": model_type,
+                "runtime_mean_sec": runtime_mean,
+                "runtime_std_sec": runtime_std,
+                "n_seeds": len(seed_runtimes),
+            }
+        )
+        print(
+            f"Exp{exp_idx} runtime over {len(seed_runtimes)} seeds: "
+            f"mean={runtime_mean:.2f}s, std={runtime_std:.2f}s"
+        )
 
         row = {
             "problem_name": problem_name,
@@ -311,11 +322,12 @@ def run_ea_for_seed42_bias_variance_models(
         summary_rows.append(row)
         write_rows_csv(output_dir / "optimization_summary_seed42_bias_variance_models.csv", summary_rows)
 
-    if optimization_runtimes:
-        runtime_mean = float(np.mean(optimization_runtimes))
-        runtime_std = float(np.std(optimization_runtimes))
+    if block_runtime_stats:
+        all_seed_runtime_means = [item["runtime_mean_sec"] for item in block_runtime_stats]
+        runtime_mean = float(np.mean(all_seed_runtime_means))
+        runtime_std = float(np.std(all_seed_runtime_means))
         print(
-            f"\nOptimization runtime summary (Exp1-Exp{len(optimization_runtimes)}): "
+            f"\nOptimization runtime summary (Exp1-Exp{len(block_runtime_stats)} block means): "
             f"mean={runtime_mean:.2f}s, std={runtime_std:.2f}s"
         )
 
