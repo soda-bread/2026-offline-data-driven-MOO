@@ -142,6 +142,9 @@ class BNNEnsembleRegressor:
         fixed_sigma=1e-3,
         eval_every=200,
         patience=10,
+        val_split=0.2,
+        min_val_size=32,
+        num_val_samples=50,
         device=None,
     ):
         if len(hidden_layer_sizes) != 2:
@@ -154,6 +157,9 @@ class BNNEnsembleRegressor:
         self.fixed_sigma = fixed_sigma
         self.eval_every = eval_every
         self.patience = patience
+        self.val_split = val_split
+        self.min_val_size = min_val_size
+        self.num_val_samples = num_val_samples
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.guide = None
@@ -171,8 +177,27 @@ class BNNEnsembleRegressor:
         pyro.set_rng_seed(self.random_state)
         pyro.clear_param_store()
 
-        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
-        y_t = torch.tensor(y, dtype=torch.float32, device=self.device).reshape(-1)
+        X_np = np.asarray(X, dtype=np.float32)
+        y_np = np.asarray(y, dtype=np.float32).reshape(-1)
+        n = X_np.shape[0]
+        val_size = max(int(n * self.val_split), self.min_val_size)
+        if n - val_size < 16:
+            val_size = max(0, n // 5)
+
+        if val_size > 0:
+            idx = np.arange(n)
+            rng = np.random.default_rng(self.random_state)
+            rng.shuffle(idx)
+            val_idx = idx[:val_size]
+            tr_idx = idx[val_size:]
+            X_train_np, y_train_np = X_np[tr_idx], y_np[tr_idx]
+            X_val_np, y_val_np = X_np[val_idx], y_np[val_idx]
+        else:
+            X_train_np, y_train_np = X_np, y_np
+            X_val_np, y_val_np = None, None
+
+        X_t = torch.tensor(X_train_np, dtype=torch.float32, device=self.device)
+        y_t = torch.tensor(y_train_np, dtype=torch.float32, device=self.device).reshape(-1)
         h1, h2 = self.hidden_layer_sizes
         in_dim = X_t.shape[1]
 
@@ -212,8 +237,19 @@ class BNNEnsembleRegressor:
         for step in range(1, self.max_iter + 1):
             loss = svi.step(X_t, y_t)
             if step % self.eval_every == 0:
-                if loss < best_loss:
-                    best_loss = loss
+                if X_val_np is not None:
+                    with torch.no_grad():
+                        predictive = Predictive(self.model, guide=self.guide, num_samples=self.num_val_samples)
+                        X_val_t = torch.tensor(X_val_np, dtype=torch.float32, device=self.device)
+                        samples = predictive(X_val_t)
+                        mu = samples["mean"].mean(dim=0)
+                        y_val_t = torch.tensor(y_val_np, dtype=torch.float32, device=self.device)
+                        score = ((mu - y_val_t) ** 2).mean().item()
+                else:
+                    score = loss
+
+                if score < best_loss:
+                    best_loss = score
                     best_state = pyro.get_param_store().get_state()
                     no_improve = 0
                 else:
@@ -235,6 +271,18 @@ class BNNEnsembleRegressor:
         samples = predictive(X_t)
         obs_samples = samples["obs"].detach().cpu().numpy()
         return obs_samples.mean(axis=0), obs_samples.std(axis=0)
+
+    def predict_quantiles(self, X, quantiles=(0.8, 0.9, 0.95)):
+        if self.model is None or self.guide is None:
+            raise ValueError("Model is not fitted yet.")
+        from pyro.infer import Predictive
+
+        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
+        predictive = Predictive(self.model, guide=self.guide, num_samples=self.n_estimators)
+        samples = predictive(X_t)["obs"].detach().cpu().numpy()
+        mean = samples.mean(axis=0)
+        q_map = {q: np.percentile(samples, q * 100.0, axis=0) for q in quantiles}
+        return mean, q_map
 
 
 def bnn_pred_mean_std(model_f1, model_f2, X_test, verbose=True):
