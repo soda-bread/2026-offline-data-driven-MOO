@@ -6,6 +6,7 @@ for running the 30x bias-variance experiment.
 
 import argparse
 import csv
+import time
 import warnings
 from pathlib import Path
 
@@ -275,10 +276,12 @@ def run_ea_for_seed42_bias_variance_models(
 ):
     output_dir = Path(output_dir)
     summary_rows = []
+    optimization_runtimes = []
 
-    for model_type, model_info in seed42_models_by_type.items():
-        print(f"\n=== EA for {problem_name} | seed=42 {model_type} model ===")
+    for exp_idx, (model_type, model_info) in enumerate(seed42_models_by_type.items(), start=1):
+        print(f"\n=== EA for {problem_name} | seed=42 {model_type} model (Exp{exp_idx}) ===")
 
+        start_time = time.perf_counter()
         summary, _ = run_ea_experiment(
             problem=problem,
             problem_name=problem_name,
@@ -292,6 +295,9 @@ def run_ea_for_seed42_bias_variance_models(
             igd_plus=igd_plus,
             seeds=seeds,
         )
+        elapsed_sec = time.perf_counter() - start_time
+        optimization_runtimes.append(elapsed_sec)
+        print(f"Exp{exp_idx} runtime: {elapsed_sec:.2f}s")
 
         row = {
             "problem_name": problem_name,
@@ -304,6 +310,14 @@ def run_ea_for_seed42_bias_variance_models(
         }
         summary_rows.append(row)
         write_rows_csv(output_dir / "optimization_summary_seed42_bias_variance_models.csv", summary_rows)
+
+    if optimization_runtimes:
+        runtime_mean = float(np.mean(optimization_runtimes))
+        runtime_std = float(np.std(optimization_runtimes))
+        print(
+            f"\nOptimization runtime summary (Exp1-Exp{len(optimization_runtimes)}): "
+            f"mean={runtime_mean:.2f}s, std={runtime_std:.2f}s"
+        )
 
     return summary_rows
 
