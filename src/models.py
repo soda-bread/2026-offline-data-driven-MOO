@@ -35,6 +35,22 @@ class BNN(PyroModule):
             pyro.sample("obs", dist.Normal(mu, self.sigma), obs=y)
         return mu
 
+    def predict(self, X, guide, num_samples=100, device=None):
+        device = device or next(self.parameters()).device
+        X_t = torch.tensor(X, dtype=torch.float32, device=device)
+        predictive = Predictive(self, guide=guide, num_samples=num_samples)
+        samples = predictive(X_t)["obs"].detach().cpu().numpy()
+        return samples.mean(axis=0), samples.std(axis=0)
+
+    def predict_quantiles(self, X, guide, quantiles=(0.8, 0.9, 0.95), num_samples=100, device=None):
+        device = device or next(self.parameters()).device
+        X_t = torch.tensor(X, dtype=torch.float32, device=device)
+        predictive = Predictive(self, guide=guide, num_samples=num_samples)
+        samples = predictive(X_t)["obs"].detach().cpu().numpy()
+        mean = samples.mean(axis=0)
+        q_map = {q: np.percentile(samples, q * 100.0, axis=0) for q in quantiles}
+        return mean, q_map
+
 
 def train_bnn(X_train, y_train, X_val=None, y_val=None, hidden=32, lr=1e-3, max_steps=5000, patience=10, eval_every=200, fixed_sigma=1e-3, num_val_samples=50, random_state=42, device=None):
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,6 +89,7 @@ def train_bnn(X_train, y_train, X_val=None, y_val=None, hidden=32, lr=1e-3, max_
                 break
     if best_state is not None:
         pyro.get_param_store().set_state(best_state)
+    model.guide = guide
     return model, guide
 
 # Model: GPR_RBF
@@ -198,82 +215,9 @@ def autogluon_qr_pred_mean_quantiles(model_f1, model_f2, X_test, verbose=True):
     return mean_q, q80, q90, q95
 
 
-class BNNEnsembleRegressor:
-    """
-    Pyro-based Bayesian neural network regressor.
-    Kept class name for backward compatibility with existing notebooks/scripts.
-    """
-    def __init__(
-        self,
-        hidden_layer_sizes=(64, 64),
-        n_estimators=100,
-        max_iter=5000,
-        random_state=42,
-        lr=1e-3,
-        fixed_sigma=1e-3,
-        eval_every=200,
-        patience=10,
-        num_val_samples=50,
-        device=None,
-    ):
-        if len(hidden_layer_sizes) != 2:
-            raise ValueError("hidden_layer_sizes must contain exactly two hidden layer sizes, e.g. (32, 32).")
-        self.hidden_layer_sizes = hidden_layer_sizes
-        self.n_estimators = n_estimators  # used as posterior predictive samples at inference time
-        self.max_iter = max_iter
-        self.random_state = random_state
-        self.lr = lr
-        self.fixed_sigma = fixed_sigma
-        self.eval_every = eval_every
-        self.patience = patience
-        self.num_val_samples = num_val_samples
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = None
-        self.guide = None
-
-    def fit(self, X, y, X_val=None, y_val=None):
-        hidden = self.hidden_layer_sizes[0]
-        self.model, self.guide = train_bnn(
-            X_train=X,
-            y_train=y,
-            X_val=X_val,
-            y_val=y_val,
-            hidden=hidden,
-            lr=self.lr,
-            max_steps=self.max_iter,
-            patience=self.patience,
-            eval_every=self.eval_every,
-            fixed_sigma=self.fixed_sigma,
-            num_val_samples=self.num_val_samples,
-            random_state=self.random_state,
-            device=self.device,
-        )
-
-    def predict(self, X):
-        if self.model is None or self.guide is None:
-            raise ValueError("Model is not fitted yet.")
-
-        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
-        predictive = Predictive(self.model, guide=self.guide, num_samples=self.n_estimators)
-        samples = predictive(X_t)
-        obs_samples = samples["obs"].detach().cpu().numpy()
-        return obs_samples.mean(axis=0), obs_samples.std(axis=0)
-
-    def predict_quantiles(self, X, quantiles=(0.8, 0.9, 0.95)):
-        if self.model is None or self.guide is None:
-            raise ValueError("Model is not fitted yet.")
-
-        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
-        predictive = Predictive(self.model, guide=self.guide, num_samples=self.n_estimators)
-        samples = predictive(X_t)["obs"].detach().cpu().numpy()
-        mean = samples.mean(axis=0)
-        q_map = {q: np.percentile(samples, q * 100.0, axis=0) for q in quantiles}
-        return mean, q_map
-
-
 def bnn_pred_mean_std(model_f1, model_f2, X_test, verbose=True):
-    mean_f1, std_f1 = model_f1.predict(X_test)
-    mean_f2, std_f2 = model_f2.predict(X_test)
+    mean_f1, std_f1 = model_f1.predict(X_test, guide=model_f1.guide)
+    mean_f2, std_f2 = model_f2.predict(X_test, guide=model_f2.guide)
 
     mean_f1 = np.asarray(mean_f1).reshape(-1)
     std_f1 = np.asarray(std_f1).reshape(-1)
